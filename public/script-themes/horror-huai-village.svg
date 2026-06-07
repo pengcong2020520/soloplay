@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-label="haunted village shrine horror background">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#100d0c"/>
+      <stop offset=".52" stop-color="#18110e"/>
+      <stop offset="1" stop-color="#030303"/>
+    </linearGradient>
+    <radialGradient id="red" cx="54%" cy="38%" r="56%">
+      <stop offset="0" stop-color="#c04a55" stop-opacity=".4"/>
+      <stop offset=".44" stop-color="#5f1c20" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain"><feTurbulence baseFrequency=".8" numOctaves="3"/><feComponentTransfer><feFuncA type="table" tableValues="0 .14"/></feComponentTransfer></filter>
+  </defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <rect width="1200" height="720" fill="url(#red)"/>
+  <path d="M0 600c180-42 375-30 580-12s410-25 620-4v136H0z" fill="#070604"/>
+  <g opacity=".8">
+    <path d="M525 600V260c-62 38-135 76-230 91 74-80 123-139 148-265 43 85 86 129 150 164 35-80 85-124 155-151-40 98-39 175 18 231 62-17 118-13 166 15-74 19-126 52-159 99v156z" fill="#0b0908" stroke="#37221b" stroke-width="5"/>
+    <path d="M225 168c260 188 502 180 767 28" fill="none" stroke="#9d2631" stroke-width="5" opacity=".66"/>
+    <path d="M286 205v72M503 265v88M722 255v95M943 210v82" stroke="#c04a55" stroke-width="4" opacity=".64"/>
+    <circle cx="286" cy="282" r="10" fill="#b53a43"/><circle cx="503" cy="359" r="10" fill="#b53a43"/><circle cx="722" cy="356" r="10" fill="#b53a43"/><circle cx="943" cy="298" r="10" fill="#b53a43"/>
+  </g>
+  <g opacity=".58">
+    <path d="M790 604V430h230v174" fill="#17100d" stroke="#5b3128" stroke-width="4"/>
+    <path d="M760 430h290l-145-105z" fill="#241511" stroke="#743a31" stroke-width="4"/>
+    <rect x="870" y="500" width="70" height="104" fill="#060606"/>
+  </g>
+  <rect width="1200" height="720" filter="url(#grain)" opacity=".78"/>
+</svg>

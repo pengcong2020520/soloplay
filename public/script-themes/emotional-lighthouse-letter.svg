@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-label="lighthouse and letter emotional background">
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#102632"/>
+      <stop offset=".52" stop-color="#173849"/>
+      <stop offset="1" stop-color="#070d12"/>
+    </linearGradient>
+    <radialGradient id="beam" cx="38%" cy="24%" r="62%">
+      <stop offset="0" stop-color="#f4d995" stop-opacity=".5"/>
+      <stop offset=".36" stop-color="#8dbbd0" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain"><feTurbulence baseFrequency=".75" numOctaves="3"/><feComponentTransfer><feFuncA type="table" tableValues="0 .1"/></feComponentTransfer></filter>
+  </defs>
+  <rect width="1200" height="720" fill="url(#sea)"/>
+  <rect width="1200" height="720" fill="url(#beam)"/>
+  <g opacity=".88">
+    <path d="M215 595h170l-38-360h-94z" fill="#e6dcc8" opacity=".86"/>
+    <path d="M248 235h105l-18-72h-69z" fill="#b55443"/>
+    <path d="M265 163h70l-18-52h-34z" fill="#e8d8bd"/>
+    <path d="M335 178L1040 92" stroke="#f4d995" stroke-width="28" stroke-linecap="round" opacity=".18"/>
+    <path d="M335 178L1020 155" stroke="#f4d995" stroke-width="11" stroke-linecap="round" opacity=".24"/>
+    <path d="M0 595c145-36 237 30 370-4s235-52 420 2 305-5 410-28v155H0z" fill="#0b1720"/>
+    <path d="M0 575c145-34 255 38 390-1 135-40 266-44 432 3 147 42 277-7 378-28" fill="none" stroke="#8dbbd0" stroke-width="5" opacity=".36"/>
+  </g>
+  <g transform="rotate(-7 820 438)" opacity=".78">
+    <rect x="700" y="340" width="320" height="210" rx="5" fill="#d9ccb1" stroke="#8a7250" stroke-width="3"/>
+    <path d="M718 360l142 88 142-88M718 532l98-82M1002 532l-98-82" fill="none" stroke="#8a7250" stroke-width="4" opacity=".72"/>
+    <circle cx="860" cy="451" r="18" fill="#7f2636" opacity=".72"/>
+  </g>
+  <rect width="1200" height="720" filter="url(#grain)" opacity=".62"/>
+</svg>

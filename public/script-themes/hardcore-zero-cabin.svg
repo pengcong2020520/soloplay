@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-label="zero cabin hard science background">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#06141d"/>
+      <stop offset=".52" stop-color="#0b2230"/>
+      <stop offset="1" stop-color="#02070b"/>
+    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="45%" r="45%">
+      <stop offset="0" stop-color="#91d8ff" stop-opacity=".5"/>
+      <stop offset=".42" stop-color="#296c8f" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain"><feTurbulence baseFrequency=".95" numOctaves="2"/><feComponentTransfer><feFuncA type="table" tableValues="0 .08"/></feComponentTransfer></filter>
+  </defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <rect width="1200" height="720" fill="url(#core)"/>
+  <g fill="none" stroke="#91d8ff" opacity=".46">
+    <path d="M120 120h960v480H120z" stroke-width="3"/>
+    <path d="M600 90v540M90 360h1020" stroke-width="2"/>
+    <circle cx="600" cy="360" r="180" stroke-width="3"/>
+    <circle cx="600" cy="360" r="92" stroke-width="8" opacity=".56"/>
+    <path d="M210 230h165M825 230h165M210 490h165M825 490h165" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g opacity=".82">
+    <rect x="490" y="250" width="220" height="220" rx="22" fill="#071019" stroke="#bceaff" stroke-width="4"/>
+    <path d="M535 360h130M600 295v130" stroke="#91d8ff" stroke-width="10" stroke-linecap="round" opacity=".7"/>
+    <circle cx="600" cy="360" r="28" fill="#d9f4ff" opacity=".72"/>
+  </g>
+  <g font-family="monospace" font-size="24" fill="#91d8ff" opacity=".38">
+    <text x="158" y="178">01:17 / LOG GAP</text>
+    <text x="812" y="548">PARADOX NODE</text>
+  </g>
+  <rect width="1200" height="720" filter="url(#grain)" opacity=".55"/>
+</svg>

@@ -1,0 +1,244 @@
+// schema.prisma
+// 本地优先：使用 SQLite。SQLite 不支持原生 enum 与 String[]，
+// 因此枚举以字符串存储（取值见 lib/constants.ts），数组以 JSON 字符串存储。
+// 迁移到 Supabase Postgres 时，可将 provider 改为 "postgresql" 并启用原生 enum / 数组。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── 用户 ───────────────────────────────────────────
+
+model User {
+  id           String           @id @default(cuid())
+  email        String           @unique
+  name         String?
+  avatarUrl    String?
+  // 认证：scrypt 派生的密码哈希（格式 "salt:hash"）。游客账号 local-user 留空。
+  passwordHash String?
+  // 会话吊销：签名 cookie 里嵌入此版本号，bump 即让该用户所有已签发会话失效（登出所有设备）。
+  tokenVersion Int              @default(0)
+  preferences  UserPreferences?
+  createdAt    DateTime         @default(now())
+
+  scripts      Script[]
+  gameSessions GameSession[]
+}
+
+model UserPreferences {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id])
+
+  // 体验偏好（JSON 字符串数组：偏好剧本类型排序）
+  preferredScriptTypes String   @default("[]")
+  preferredDifficulty  String? // BEGINNER / INTERMEDIATE / HARDCORE
+  preferredDuration    String? // SHORT / MEDIUM / LONG / ASK_EACH_TIME
+  defaultPlayerMode    String? // ROLE_PLAY / DETECTIVE / null=每次询问
+
+  // 内容边界（JSON 字符串数组）
+  contentRestrictions  String   @default("[]")
+
+  // 体验历史摘要
+  experienceSummary    String?
+
+  // 统计数据
+  totalGamesPlayed     Int      @default(0)
+  avgRating            Float?
+  favoriteElements     String   @default("[]")
+
+  updatedAt            DateTime @updatedAt
+}
+
+// ─── 剧本 ───────────────────────────────────────────
+
+model Script {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+
+  title             String
+  scriptType        String // DEDUCTION/HARDCORE/EMOTIONAL/COMEDY/HORROR/RESTORATION
+  source            String // UPLOAD / AI_GENERATED / BUILTIN
+
+  // 公共内容
+  publicStory       String
+  setting           String   @default("{}") // JSON: 时代、地点等
+
+  // 游戏配置
+  characterCount    Int
+  estimatedDuration Int // 分钟
+  difficulty        String // BEGINNER / INTERMEDIATE / HARDCORE
+  specialMechanics  String? // JSON
+  phaseConfig       String   @default("[]") // JSON 阶段结构
+
+  // 仅 DM 知晓的完整真相
+  murderSummary     String?
+
+  // 生成参数
+  generationParams  String? // JSON
+
+  characters        Character[]
+  clueCards         ClueCard[]
+  gameSessions      GameSession[]
+
+  createdAt         DateTime @default(now())
+}
+
+model Character {
+  id               String  @id @default(cuid())
+  scriptId         String
+  script           Script  @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+
+  name             String
+  gender           String?
+  occupation       String?
+  publicProfile    String
+  privateStory     String
+  secrets          String
+  hiddenGoal       String
+  victoryCondition String
+  unknownFacts     String?
+
+  relationships    String? // JSON
+
+  isMurderer       Boolean @default(false)
+  isVictim         Boolean @default(false)
+  // 玩家角色（角色1）标记，用于分配
+  isPlayerSlot     Boolean @default(false)
+
+  sessionCharacters SessionCharacter[]
+}
+
+model ClueCard {
+  id               String  @id @default(cuid())
+  scriptId         String
+  script           Script  @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+
+  title            String
+  content          String
+  clueType         String // PHYSICAL / TESTIMONY / TIMELINE / SPECIAL
+  releasePhase     Int
+  triggerCondition String?
+  isSecret         Boolean @default(false)
+
+  clueReleases     ClueRelease[]
+}
+
+// ─── 游戏会话 ─────────────────────────────────────
+
+model GameSession {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
+  scriptId           String
+  script             Script   @relation(fields: [scriptId], references: [id])
+
+  playerMode         String // ROLE_PLAY / DETECTIVE
+  status             String   @default("SETUP") // SETUP / IN_PROGRESS / PAUSED / COMPLETED
+  currentPhase       Int      @default(0)
+  phaseStartedAt     DateTime? // 当前阶段进入时间，用于阶段超时自动推进
+  phaseHistory       String   @default("[]") // JSON
+
+  // 体验自适应状态
+  engagementSignals  String   @default("{}") // JSON
+  difficultyAdjusted Boolean  @default(false)
+  hintsUsed          Int      @default(0)
+
+  startedAt          DateTime?
+  completedAt        DateTime?
+  pausedAt           DateTime?
+  duration           Int?
+
+  // 体验反馈
+  experienceFeedback String? // JSON
+  experienceTags     String   @default("[]") // JSON
+
+  sessionCharacters  SessionCharacter[]
+  messages           Message[]
+  votes              Vote[]
+  clueReleases       ClueRelease[]
+
+  createdAt          DateTime @default(now())
+}
+
+model SessionCharacter {
+  id              String      @id @default(cuid())
+  sessionId       String
+  session         GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  characterId     String
+  character       Character   @relation(fields: [characterId], references: [id])
+
+  assignedTo      String // PLAYER / AI
+
+  agentContext    String? // JSON 对话上下文摘要
+
+  victoryAchieved Boolean?
+  victoryReason   String?
+
+  @@unique([sessionId, characterId])
+}
+
+// ─── 消息 ─────────────────────────────────────────
+
+model Message {
+  id          String      @id @default(cuid())
+  sessionId   String
+  session     GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  channelType String // PUBLIC / PRIVATE / DM_BROADCAST / DM_HINT
+  channelKey  String // PUBLIC="public", PRIVATE="charA-charB"（按字母序）
+
+  senderType  String // PLAYER / AI_CHARACTER / DM
+  senderId    String
+  senderName  String
+
+  content     String
+  phase       Int
+
+  isVisible   Boolean     @default(true)
+  metadata    String? // JSON
+
+  createdAt   DateTime    @default(now())
+
+  @@index([sessionId, channelKey])
+}
+
+// ─── 投票 ─────────────────────────────────────────
+
+model Vote {
+  id         String      @id @default(cuid())
+  sessionId  String
+  session    GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  voterId    String
+  voterName  String
+  voterType  String // PLAYER / AI_CHARACTER / DM
+
+  targetId   String
+  targetName String
+  reason     String
+
+  createdAt  DateTime    @default(now())
+
+  // 每个投票人（玩家="player" / 各 AI=角色 id）一局只投一次，DB 级保证投票幂等、防并发重复投票
+  @@unique([sessionId, voterId])
+}
+
+// ─── 线索发布记录 ──────────────────────────────────
+
+model ClueRelease {
+  id         String      @id @default(cuid())
+  sessionId  String
+  session    GameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  clueCardId String
+  clueCard   ClueCard    @relation(fields: [clueCardId], references: [id])
+
+  releasedAt DateTime    @default(now())
+  phase      Int
+}

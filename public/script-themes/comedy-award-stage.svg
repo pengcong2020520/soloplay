@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-label="annual party award stage comedy background">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#241018"/>
+      <stop offset=".48" stop-color="#3b1f14"/>
+      <stop offset="1" stop-color="#0c0a0b"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="50%" cy="18%" r="70%">
+      <stop offset="0" stop-color="#ffd36a" stop-opacity=".62"/>
+      <stop offset=".38" stop-color="#db6545" stop-opacity=".24"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain"><feTurbulence baseFrequency=".85" numOctaves="2"/><feComponentTransfer><feFuncA type="table" tableValues="0 .08"/></feComponentTransfer></filter>
+  </defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <rect width="1200" height="720" fill="url(#spot)"/>
+  <path d="M0 590h1200v130H0z" fill="#160b0c"/>
+  <path d="M155 585c190-55 705-55 890 0" fill="#2e1714" stroke="#f7c85f" stroke-width="4" opacity=".62"/>
+  <g opacity=".9">
+    <path d="M525 425h150l-24 118H549z" fill="#d69a35"/>
+    <path d="M500 270h200l-30 110c-11 42-44 70-70 70s-59-28-70-70z" fill="#f7c85f" stroke="#fff0a3" stroke-width="5"/>
+    <path d="M500 300H390c0 74 55 112 128 106M700 300h110c0 74-55 112-128 106" fill="none" stroke="#f7c85f" stroke-width="22" stroke-linecap="round"/>
+    <rect x="495" y="540" width="210" height="42" rx="8" fill="#84532a"/>
+  </g>
+  <g stroke-width="10" stroke-linecap="round" opacity=".74">
+    <path d="M105 122c70 66 140-44 216 24" stroke="#f6bd60"/>
+    <path d="M878 106c68 62 134-38 211 20" stroke="#e84a5f"/>
+    <path d="M178 235c52-38 108 38 168-4" stroke="#80d8c3"/>
+    <path d="M870 245c64-35 122 42 188-8" stroke="#ffd166"/>
+  </g>
+  <g fill="#fff3b0" opacity=".55">
+    <circle cx="205" cy="410" r="8"/><circle cx="912" cy="392" r="7"/><circle cx="1035" cy="475" r="9"/><circle cx="315" cy="486" r="6"/>
+  </g>
+  <rect width="1200" height="720" filter="url(#grain)" opacity=".55"/>
+</svg>

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" role="img" aria-label="sealed case file background">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c0b0a"/>
+      <stop offset="0.55" stop-color="#1a130d"/>
+      <stop offset="1" stop-color="#06070a"/>
+    </linearGradient>
+    <radialGradient id="lamp" cx="50%" cy="20%" r="56%">
+      <stop offset="0" stop-color="#e2aa5f" stop-opacity=".34"/>
+      <stop offset=".52" stop-color="#a66338" stop-opacity=".13"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="grain">
+      <feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="table" tableValues="0 .12"/></feComponentTransfer>
+    </filter>
+  </defs>
+  <rect width="1200" height="720" fill="url(#bg)"/>
+  <rect width="1200" height="720" fill="url(#lamp)"/>
+  <g opacity=".86">
+    <path d="M160 150h610l110 96v356H160z" fill="#2a2117" stroke="#725332" stroke-width="3"/>
+    <path d="M770 150v98h110" fill="none" stroke="#9e7444" stroke-width="3"/>
+    <path d="M220 255h500M220 310h590M220 365h430M220 420h530" stroke="#baa27a" stroke-width="8" stroke-linecap="round" opacity=".38"/>
+    <circle cx="820" cy="545" r="58" fill="#5d1d28" stroke="#d4a35b" stroke-width="5" opacity=".9"/>
+    <path d="M790 545h60M820 515v60" stroke="#f1c47b" stroke-width="6" stroke-linecap="round" opacity=".55"/>
+    <path d="M350 575C480 470 610 612 720 520" fill="none" stroke="#8b2238" stroke-width="5" opacity=".75"/>
+    <circle cx="350" cy="575" r="10" fill="#c74750"/><circle cx="720" cy="520" r="10" fill="#c74750"/>
+  </g>
+  <rect width="1200" height="720" filter="url(#grain)" opacity=".65"/>
+</svg>

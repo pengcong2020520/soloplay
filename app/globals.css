@@ -1,0 +1,313 @@
+@import url("https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@600;700;900&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 220 22% 5%;
+  --foreground: 42 40% 92%;
+  --card: 222 20% 8%;
+  --card-foreground: 42 38% 92%;
+  --primary: 36 88% 59%;
+  --primary-foreground: 32 26% 9%;
+  --secondary: 218 16% 14%;
+  --secondary-foreground: 42 34% 88%;
+  --muted: 218 14% 13%;
+  --muted-foreground: 38 14% 66%;
+  --accent: 29 64% 23%;
+  --accent-foreground: 38 85% 86%;
+  --destructive: 0 68% 48%;
+  --destructive-foreground: 42 40% 95%;
+  --border: 35 19% 20%;
+  --input: 35 19% 20%;
+  --ring: 37 88% 62%;
+  --radius: 0.5rem;
+
+  --case-bg-rgb: 9, 11, 15;
+  --case-surface-rgb: 18, 17, 15;
+  --case-gold-rgb: 240, 179, 91;
+  --case-copper-rgb: 183, 102, 60;
+  --case-wine-rgb: 109, 29, 47;
+  --case-blue-rgb: 49, 92, 114;
+  --case-green-rgb: 79, 107, 75;
+  --theme-image: url("/script-themes/default-case-file.svg");
+  --theme-accent: #d9a35b;
+  --theme-rgb: 217, 163, 91;
+  --theme-shadow-rgb: 68, 45, 28;
+  --theme-surface: rgba(24, 19, 13, 0.84);
+  --mx: 50vw;
+  --my: 18vh;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at var(--mx) var(--my), rgba(var(--case-gold-rgb), 0.12), transparent 28rem),
+    radial-gradient(circle at 10% 0%, rgba(var(--case-wine-rgb), 0.13), transparent 24rem),
+    linear-gradient(180deg, #0b0d12 0%, #090b0f 42%, #06070a 100%);
+  color: hsl(var(--foreground));
+  font-family: "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+h1,
+h2,
+.case-serif {
+  font-family: "Noto Serif SC", "Noto Sans SC", ui-serif, Georgia, serif;
+}
+
+::selection {
+  background: rgba(var(--case-gold-rgb), 0.28);
+  color: hsl(var(--foreground));
+}
+
+/* 沉浸式滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+@layer utilities {
+  .case-page {
+    position: relative;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .case-page::before {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    background:
+      linear-gradient(rgba(255, 255, 255, 0.024) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(circle at 50% 16%, #000 0%, transparent 68%);
+  }
+
+  .case-page::after {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(circle at 50% 10%, rgba(var(--case-gold-rgb), 0.12), transparent 26rem),
+      linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.3));
+  }
+
+  .case-rise {
+    animation: case-rise 520ms cubic-bezier(.2, .8, .2, 1) both;
+  }
+
+  .case-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 8px;
+    border-color: hsl(var(--border));
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01)),
+      hsl(var(--card));
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .case-card::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(115deg, rgba(var(--case-gold-rgb), 0.06), transparent 34%),
+      radial-gradient(circle at 82% 0%, rgba(var(--case-wine-rgb), 0.11), transparent 22rem);
+    opacity: 0.9;
+  }
+
+  .case-card > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .case-card-hover {
+    transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .case-card-hover:hover {
+    transform: translateY(-2px);
+    border-color: hsl(var(--ring) / 0.6);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(var(--case-gold-rgb), 0.08);
+  }
+
+  .case-panel {
+    border: 1px solid hsl(var(--border));
+    background:
+      linear-gradient(180deg, rgba(var(--case-surface-rgb), 0.88), rgba(var(--case-surface-rgb), 0.72)),
+      radial-gradient(circle at 0% 0%, rgba(var(--theme-rgb), 0.12), transparent 18rem);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+
+  .case-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(var(--case-gold-rgb), 0.28);
+    background: rgba(var(--case-gold-rgb), 0.08);
+    color: hsl(var(--primary));
+  }
+
+  .case-hero-title {
+    background: linear-gradient(135deg, #fff8e8 0%, #f0b35b 44%, #8dbbd0 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    text-shadow: 0 20px 60px rgba(var(--case-gold-rgb), 0.13);
+  }
+
+  .script-art {
+    background-image:
+      linear-gradient(180deg, rgba(var(--case-bg-rgb), 0.1), rgba(var(--case-bg-rgb), 0.78)),
+      var(--theme-image);
+    background-position: center;
+    background-size: cover;
+  }
+
+  .script-art-soft {
+    background-image:
+      linear-gradient(90deg, rgba(var(--case-bg-rgb), 0.86), rgba(var(--case-bg-rgb), 0.46)),
+      var(--theme-image);
+    background-position: center;
+    background-size: cover;
+  }
+
+  .script-card {
+    border-color: rgba(var(--theme-rgb), 0.32);
+    background:
+      linear-gradient(180deg, rgba(var(--case-bg-rgb), 0.18), rgba(var(--case-bg-rgb), 0.82)),
+      var(--theme-image);
+    background-position: center;
+    background-size: cover;
+  }
+
+  .script-card::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 16% 0%, rgba(var(--theme-rgb), 0.28), transparent 18rem),
+      linear-gradient(180deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.58));
+  }
+
+  .script-card > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .script-chat-stage {
+    position: relative;
+    background:
+      linear-gradient(180deg, rgba(var(--case-bg-rgb), 0.46), rgba(var(--case-bg-rgb), 0.88)),
+      var(--theme-image);
+    background-position: center;
+    background-size: cover;
+  }
+
+  .script-chat-stage::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 50% 0%, rgba(var(--theme-rgb), 0.24), transparent 26rem),
+      linear-gradient(90deg, rgba(0,0,0,0.42), transparent 35%, transparent 65%, rgba(0,0,0,0.42));
+  }
+
+  .script-chat-stage > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .script-bubble {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid rgba(var(--theme-rgb), 0.38);
+    background:
+      linear-gradient(180deg, rgba(var(--case-bg-rgb), 0.28), rgba(var(--case-bg-rgb), 0.76)),
+      var(--theme-image);
+    background-position: center;
+    background-size: cover;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.28);
+  }
+
+  .script-bubble::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, rgba(var(--theme-rgb), 0.22), transparent 54%),
+      linear-gradient(180deg, rgba(255,255,255,0.06), transparent 38%);
+  }
+
+  .script-bubble > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .case-transcript-row {
+    border: 1px solid rgba(var(--theme-rgb), 0.22);
+    background: linear-gradient(90deg, rgba(var(--theme-rgb), 0.08), rgba(var(--case-surface-rgb), 0.72));
+  }
+
+  .case-marquee {
+    animation: case-marquee 28s linear infinite;
+  }
+}
+
+@keyframes case-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes case-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
