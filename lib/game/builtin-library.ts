@@ -3,6 +3,7 @@ import { persistScript } from "@/lib/agents/script-generator";
 import { BUILTIN_USER, ScriptSource, ScriptType, Difficulty } from "@/lib/constants";
 import { MOCK_DEDUCTION_SCRIPT } from "@/lib/agents/mock-data";
 import { getCharacterAvatarUrl } from "@/lib/avatars";
+import { buildScriptVisualStyle, decorateGeneratedClue } from "@/lib/game/clue-visuals";
 import {
   BUILTIN_EMOTIONAL_SCRIPT,
   BUILTIN_COMEDY_SCRIPT,
@@ -110,8 +111,36 @@ export async function ensureBuiltinLibrary(): Promise<void> {
       where: { userId, source: ScriptSource.BUILTIN, title: entry.script.title },
       select: { id: true },
     });
-    if (exists) continue;
-    await persistScript(userId, entry.script, paramsFor(entry), ScriptSource.BUILTIN);
+    const scriptId =
+      exists?.id ?? (await persistScript(userId, entry.script, paramsFor(entry), ScriptSource.BUILTIN));
+    await refreshBuiltinVisualAssets(scriptId, entry);
+  }
+}
+
+async function refreshBuiltinVisualAssets(scriptId: string, entry: BuiltinEntry) {
+  const visualStyle = buildScriptVisualStyle(entry.script.title, entry.script.setting);
+  await prisma.script.update({
+    where: { id: scriptId },
+    data: { visualStyle: JSON.stringify(visualStyle) },
+  });
+
+  const decoratedClues = entry.script.clueCards.map((clue, index) =>
+    decorateGeneratedClue(entry.script.title, clue, index, entry.script.setting)
+  );
+
+  for (const clue of decoratedClues) {
+    await prisma.clueCard.updateMany({
+      where: { scriptId, title: clue.title },
+      data: {
+        imageUrl: clue.imageUrl,
+        mediaType: clue.mediaType ?? "image",
+        videoUrl: clue.videoUrl,
+        visualBatchId: clue.visualBatchId,
+        visualPrompt: clue.visualPrompt,
+        sequenceIndex: clue.sequenceIndex,
+        sharePolicy: clue.sharePolicy ?? "PUBLIC_AFTER_RELEASE",
+      },
+    });
   }
 }
 

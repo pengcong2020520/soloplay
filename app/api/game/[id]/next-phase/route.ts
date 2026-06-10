@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { loadSession, getAiCharacters } from "@/lib/game/session";
+import { loadSession, getAiCharacters, getPlayerCharacter, getCurrentPhase } from "@/lib/game/session";
 import { resolveUserId } from "@/lib/auth/current-user";
 import { sseResponse } from "@/lib/sse";
 import {
@@ -9,6 +9,11 @@ import {
   streamDMTurn,
   runPublicGroupDiscussion,
 } from "@/lib/game/turn";
+import {
+  getSequentialPlayerPrompt,
+  isFreeDiscussionPhase,
+  isSequentialCharacterPhase,
+} from "@/lib/game/phase-flow";
 import { refreshPhaseSummaries } from "@/lib/agents/summarizer";
 import {
   triggerPhaseMechanics,
@@ -21,6 +26,7 @@ import {
   GameStatus,
   PUBLIC_CHANNEL_KEY,
 } from "@/lib/constants";
+import { buildDmClueReleaseMetadata, clueCardToDto } from "@/lib/game/clue-director";
 
 export const maxDuration = 120;
 
@@ -39,6 +45,27 @@ export async function POST(
   const loaded = await loadSession(params.id, userId);
   if (!loaded) {
     return sseResponse(async (send) => send({ type: "ERROR", message: "未找到会话" }));
+  }
+  const currentPhase = getCurrentPhase(loaded);
+  const playerSc = getPlayerCharacter(loaded);
+  if (playerSc && isSequentialCharacterPhase(currentPhase)) {
+    const playerSpoke = await prisma.message.findFirst({
+      where: {
+        sessionId: params.id,
+        phase: loaded.currentPhase,
+        channelType: ChannelType.PUBLIC,
+        senderType: SenderType.PLAYER,
+      },
+      select: { id: true },
+    });
+    if (!playerSpoke) {
+      return sseResponse(async (send) =>
+        send({
+          type: "ERROR",
+          message: "当前是顺序发言阶段，请先完成你的发言。DM 会在全员发言后自动进入下一环节。",
+        })
+      );
+    }
   }
 
   const nextPhaseIdx = Math.min(loaded.currentPhase + 1, loaded.phases.length - 1);
@@ -84,9 +111,16 @@ export async function POST(
     // 摘要写入了 agentContext，重新加载以让后续所有发言读到最新摘要
     const updated = (await loadSession(params.id)) ?? reloaded;
     const newPhase = updated.phases[nextPhaseIdx];
+    const needsSequential = isSequentialCharacterPhase(newPhase);
 
     // 2. DM 阶段宣告（流式）
-    const dmDirective = `请正式宣告进入阶段「${newPhase.name}」（${newPhase.description}），用庄重自然的语气，简短有力。`;
+    const sequentialPlayerSc = getPlayerCharacter(updated);
+    const sequentialAiNames = getAiCharacters(updated).map((sc) => sc.character.name).join("、");
+    const dmDirective = needsSequential
+      ? sequentialPlayerSc
+        ? `请正式宣告进入阶段「${newPhase.name}」（${newPhase.description}）。说明发言顺序：先由 AI 角色按顺序发言（${sequentialAiNames || "在场角色"}），最后轮到玩家角色「${sequentialPlayerSc.character.name}」。不要说玩家先开始，简短有力。`
+        : `请正式宣告进入阶段「${newPhase.name}」（${newPhase.description}）。说明在场角色将依次发言，全部发言后由 DM 收束并进入下一环节，简短有力。`
+      : `请正式宣告进入阶段「${newPhase.name}」（${newPhase.description}），用庄重自然的语气，简短有力。`;
     await streamDMTurn(updated, dmDirective, "PHASE_ANNOUNCE", send, { phase: nextPhaseIdx });
 
     send({
@@ -97,15 +131,9 @@ export async function POST(
     });
 
     // 3. 线索发布（若该阶段配置了 RELEASE_CLUE）
-    const hasClueRelease = newPhase.dmTriggers.some((t) => t.type === "RELEASE_CLUE");
-    if (hasClueRelease) {
-      const clues = await prisma.clueCard.findMany({
-        where: {
-          scriptId: updated.script.id,
-          releasePhase: nextPhaseIdx,
-          isSecret: false,
-        },
-      });
+    const clueTriggers = newPhase.dmTriggers.filter((t) => t.type === "RELEASE_CLUE");
+    if (clueTriggers.length > 0) {
+      const clues = await selectCluesForTriggers(updated.script.id, params.id, nextPhaseIdx, clueTriggers);
       for (const clue of clues) {
         // 避免重复发布
         const exists = await prisma.clueRelease.findFirst({
@@ -114,7 +142,13 @@ export async function POST(
         if (exists) continue;
 
         await prisma.clueRelease.create({
-          data: { sessionId: params.id, clueCardId: clue.id, phase: nextPhaseIdx },
+          data: {
+            sessionId: params.id,
+            clueCardId: clue.id,
+            phase: nextPhaseIdx,
+            releasedBy: "DM",
+            releaseReason: `阶段「${newPhase.name}」自动发放`,
+          },
         });
         await saveMessage({
           sessionId: params.id,
@@ -123,27 +157,19 @@ export async function POST(
           senderType: SenderType.DM,
           senderId: "dm",
           senderName: "DM",
-          content: `【DM】发布线索卡【${clue.title}】：${clue.content}`,
+          content: `【DM】发放线索卡《${clue.title}》。线索已沉淀到右侧牌堆，可用于举证或质询。`,
           phase: nextPhaseIdx,
-          metadata: { clueId: clue.id },
+          metadata: buildDmClueReleaseMetadata(clue, `阶段「${newPhase.name}」自动发放`),
         });
         send({
           type: "CLUE_RELEASED",
-          clueCard: {
-            id: clue.id,
-            title: clue.title,
-            content: clue.content,
-            clueType: clue.clueType as any,
-          },
+          clueCard: clueCardToDto(clue),
           dmDescription: "",
         });
       }
     }
 
     // 4. 顺序点名（自我介绍 / 最终陈词阶段）
-    const needsSequential = newPhase.dmTriggers.some(
-      (t) => t.type === "PROMPT_CHARACTER"
-    );
     if (needsSequential) {
       const directive =
         newPhase.name.includes("陈词") || newPhase.id === 5
@@ -160,18 +186,61 @@ export async function POST(
           directive
         );
       }
+
+      const playerSc = getPlayerCharacter(updated);
+      if (playerSc) {
+        const prompt = getSequentialPlayerPrompt(newPhase, playerSc.character.name);
+        const saved = await saveMessage({
+          sessionId: params.id,
+          channelType: ChannelType.DM_BROADCAST,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          senderType: SenderType.DM,
+          senderId: "dm",
+          senderName: "DM",
+          content: prompt,
+          phase: nextPhaseIdx,
+        });
+        send({
+          type: "MESSAGE_COMPLETE",
+          messageId: saved.id,
+          fullContent: prompt,
+          sender: { type: "DM", id: "dm", name: "DM" },
+          phase: nextPhaseIdx,
+          channelKey: PUBLIC_CHANNEL_KEY,
+        });
+      } else {
+        const autoDirective = newPhase.name.includes("陈词") || newPhase.id === 5
+          ? "所有在场角色已经完成最终陈词。请作为 DM 用 2 句以内收束全员陈词，不复述任何人的原话，然后宣布即将进入投票阶段。"
+          : "所有在场角色已经完成自我介绍。请作为 DM 用 2 句以内提炼人物关系和当前氛围，不复述任何人的原话，然后宣布即将进入下一环节。";
+        await streamDMTurn(
+          updated,
+          autoDirective,
+          "GUIDE",
+          send,
+          { phase: nextPhaseIdx }
+        );
+        if (nextPhaseIdx < updated.phases.length - 1) {
+          send({
+            type: "PHASE_CHANGED",
+            newPhase: nextPhaseIdx + 1,
+            phaseName: "",
+            dmAnnouncement: "__AUTO_NEXT__",
+          });
+        }
+      }
     }
 
     // 4.5 特殊机制：按剧本类型触发随机/恐怖/情感事件 + 阶段判定 + 角色间密谈
-    await triggerPhaseMechanics(updated, send);
-    await runPhaseJudgment(updated, send);
-    await triggerCharToCharGossip(updated, send);
+    if (!needsSequential) {
+      await triggerPhaseMechanics(updated, send);
+      await runPhaseJudgment(updated, send);
+      await triggerCharToCharGossip(updated, send);
+    }
 
     // 4.6 进入「自由交流/讨论」类阶段时，先让 AI 角色在公共频道自发聊起来，
     //     避免该阶段一上来冷场、只能等玩家一问一答。玩家可随时插话。
     if (
-      newPhase.permissions.publicChat &&
-      (newPhase.name.includes("自由交流") || newPhase.name.includes("自由讨论"))
+      isFreeDiscussionPhase(newPhase)
     ) {
       await runPublicGroupDiscussion(updated, send, { turns: 2 });
     }
@@ -184,6 +253,60 @@ export async function POST(
       });
     }
   });
+}
+
+async function selectCluesForTriggers(
+  scriptId: string,
+  sessionId: string,
+  currentPhase: number,
+  triggers: { config: any }[]
+) {
+  const released = await prisma.clueRelease.findMany({
+    where: { sessionId },
+    select: { clueCardId: true },
+  });
+  const releasedIds = released.map((item) => item.clueCardId);
+  const selectedIds = new Set<string>();
+  const selected: Awaited<ReturnType<typeof prisma.clueCard.findMany>> = [];
+
+  for (const trigger of triggers) {
+    const targetPhase = Number(trigger.config?.phase ?? currentPhase) || currentPhase;
+    const batchSize = Math.max(1, Math.min(Number(trigger.config?.batchSize ?? 3) || 3, 6));
+    const clueType = typeof trigger.config?.clueType === "string" ? trigger.config.clueType : undefined;
+    const exact = await prisma.clueCard.findMany({
+      where: {
+        scriptId,
+        releasePhase: targetPhase,
+        isSecret: false,
+        ...(clueType ? { clueType } : {}),
+        id: { notIn: [...releasedIds, ...selectedIds] },
+      },
+      orderBy: [{ sequenceIndex: "asc" }, { releasePhase: "asc" }, { id: "asc" }],
+      take: batchSize,
+    });
+    for (const clue of exact) {
+      selected.push(clue);
+      selectedIds.add(clue.id);
+    }
+    if (exact.length >= batchSize) continue;
+
+    const fallback = await prisma.clueCard.findMany({
+      where: {
+        scriptId,
+        isSecret: false,
+        ...(clueType ? { clueType } : {}),
+        id: { notIn: [...releasedIds, ...selectedIds] },
+      },
+      orderBy: [{ releasePhase: "asc" }, { sequenceIndex: "asc" }, { id: "asc" }],
+      take: batchSize - exact.length,
+    });
+    for (const clue of fallback) {
+      selected.push(clue);
+      selectedIds.add(clue.id);
+    }
+  }
+
+  return selected;
 }
 
 function safeArr(s: string): any[] {

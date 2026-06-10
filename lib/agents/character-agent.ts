@@ -1,4 +1,4 @@
-import { streamComplete, type ChatMessage } from "@/lib/anthropic";
+import { complete, streamComplete, type ChatMessage } from "@/lib/anthropic";
 import { buildCharacterSystemPrompt } from "@/lib/agents/prompts/character";
 import { prisma } from "@/lib/db/prisma";
 import { parseJson } from "@/lib/utils";
@@ -88,6 +88,24 @@ export interface CharacterSpeakInput {
 export async function* streamCharacterReply(
   input: CharacterSpeakInput
 ): AsyncGenerator<string, void, unknown> {
+  const { system, messages } = await buildCharacterCompletionInput(input);
+
+  yield* streamComplete(
+    { system, messages, maxTokens: 600, temperature: 0.85 },
+    () => mockCharacterReply(input.character, input.directive, input.channelKey === PUBLIC_CHANNEL_KEY)
+  );
+}
+
+/** 非流式生成某个角色的发言，用于流式中断后的同角色补完。 */
+export async function completeCharacterReply(input: CharacterSpeakInput): Promise<string> {
+  const { system, messages } = await buildCharacterCompletionInput(input);
+  return complete(
+    { system, messages, maxTokens: 420, temperature: 0.75 },
+    () => mockCharacterReply(input.character, input.directive, input.channelKey === PUBLIC_CHANNEL_KEY)
+  );
+}
+
+async function buildCharacterCompletionInput(input: CharacterSpeakInput) {
   const { loaded, character, channelKey } = input;
   const phase = getCurrentPhase(loaded);
 
@@ -119,10 +137,7 @@ export async function* streamCharacterReply(
     messages.push({ role: "user", content: "请你回应一下。" });
   }
 
-  yield* streamComplete(
-    { system, messages, maxTokens: 600, temperature: 0.85 },
-    () => mockCharacterReply(character, input.directive, channelKey === PUBLIC_CHANNEL_KEY)
-  );
+  return { system, messages };
 }
 
 /** 无密钥时的角色发言兜底 */

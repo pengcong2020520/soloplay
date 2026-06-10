@@ -3,10 +3,27 @@ import { PUBLIC_CHANNEL_KEY, ChannelType, SenderType } from "@/lib/constants";
 import type { GameEvent, SenderInfo } from "@/types/game";
 import type { LoadedSession } from "@/lib/game/session";
 import { getAiCharacters, getCurrentPhase } from "@/lib/game/session";
-import { streamCharacterReply } from "@/lib/agents/character-agent";
-import { streamDMReply, type DMActionType } from "@/lib/agents/dm-agent";
+import { isSequentialCharacterPhase } from "@/lib/game/phase-flow";
+import { completeCharacterReply, streamCharacterReply } from "@/lib/agents/character-agent";
+import { dmComplete, streamDMReply, type DMActionType } from "@/lib/agents/dm-agent";
 import { recordConsistencyCheck } from "@/lib/agents/consistency-agent";
+import { MODEL, PROVIDER } from "@/lib/anthropic";
+import {
+  analyzeDialogueTargets,
+  buildGroupDiscussionDirective,
+  pickNextGroupSpeaker,
+  planPublicResponders,
+} from "@/lib/game/conversation-director";
+import {
+  assessTurnIntegrity,
+  buildContinuationDirective,
+  buildTurnIntegrityMetadata,
+  mergeContinuation,
+  normalizeTurnText,
+} from "@/lib/game/turn-integrity";
 import type { Character } from "@prisma/client";
+
+let streamMessageCounter = 0;
 
 /** 持久化一条消息 */
 export async function saveMessage(args: {
@@ -52,24 +69,63 @@ export async function streamCharacterTurn(
     id: character.id,
     name: character.name,
   };
-  const messageId = `stream-${character.id}-${loaded.session.id}-${loaded.currentPhase}-${channelKey}`;
+  const messageId = createStreamMessageId(character.id, loaded.session.id);
 
   let full = "";
   let streamError: unknown;
+  send({
+    type: "AGENT_STATUS_CHANGED",
+    agentId: character.id,
+    agentName: character.name,
+    status: "THINKING",
+    reason: directive ? "准备回应当前话题" : "准备发言",
+  });
   try {
     for await (const chunk of streamCharacterReply({ loaded, character, channelKey, directive })) {
       full += chunk;
       send({ type: "MESSAGE_STREAM", chunk, messageId, sender });
     }
   } catch (err) {
-    // 真实 API 流中途报错：保留已产出的 chunk，下面照常落库；
-    // 若一个字都没出来，给一句兜底，避免空消息且不中断整条 SSE 流。
     streamError = err;
-    if (!full.trim()) {
-      full = `（${character.name}欲言又止，似乎一时语塞……）`;
-    }
   }
 
+  let integrity = assessTurnIntegrity(full, { streamError });
+  let continuationCount = 0;
+  if (!integrity.complete) {
+    const continuationDirective = buildContinuationDirective({
+      speakerName: character.name,
+      partialText: full,
+      originalDirective: directive,
+    });
+    try {
+      const continuation = await completeCharacterReply({
+        loaded,
+        character,
+        channelKey,
+        directive: continuationDirective,
+      });
+      if (continuation.trim()) {
+        full = mergeContinuation(full, continuation);
+        continuationCount += 1;
+        send({ type: "MESSAGE_STREAM", chunk: continuation, messageId, sender });
+      }
+    } catch (err) {
+      streamError = streamError ?? err;
+    }
+    integrity = {
+      ...assessTurnIntegrity(full, { streamError: undefined }),
+      repaired: continuationCount > 0,
+      continuationCount,
+      streamError: streamError ? String((streamError as Error)?.message ?? streamError) : undefined,
+      reason: continuationCount > 0 ? "continued_after_interruption" : integrity.reason,
+    };
+  }
+
+  full = normalizeTurnText(full);
+  if (!full.trim()) {
+    full = `（${character.name}沉默片刻，似乎仍在斟酌该如何开口。）`;
+  }
+  const dialogue = analyzeDialogueTargets(loaded, full, { speakerId: character.id, includePlayer: true });
   const saved = await saveMessage({
     sessionId: loaded.session.id,
     channelType,
@@ -79,7 +135,11 @@ export async function streamCharacterTurn(
     senderName: character.name,
     content: full,
     phase: loaded.currentPhase,
-    metadata: streamError ? { streamError: String((streamError as Error)?.message ?? streamError) } : undefined,
+    metadata: {
+      turnIntegrity: buildTurnIntegrityMetadata(integrity),
+      dialogue,
+      llm: buildLlmMetadata(streamError, continuationCount),
+    },
   });
 
   send({
@@ -89,6 +149,14 @@ export async function streamCharacterTurn(
     sender,
     phase: loaded.currentPhase,
     channelKey,
+    metadata: saved.metadata ? safeObj(saved.metadata) : undefined,
+  });
+  send({
+    type: "AGENT_STATUS_CHANGED",
+    agentId: character.id,
+    agentName: character.name,
+    status: "RESPONDED",
+    reason: "发言已生成，等待语音展示",
   });
 
   // 穿帮检测：仅对公共发言、非空、非流式报错时做。玩家已看到完整发言，这里在其后异步校验，
@@ -109,23 +177,9 @@ export function pickRespondersForPublic(
   loaded: LoadedSession,
   playerContent: string
 ): Character[] {
-  const ai = getAiCharacters(loaded).map((sc) => sc.character);
-  if (ai.length === 0) return [];
-
-  // 若玩家点名某角色（消息包含其名字），优先让该角色回应
-  const named = ai.filter((c) => playerContent.includes(c.name));
-  if (named.length > 0) return named.slice(0, 2);
-
-  // 否则用内容长度做稳定选择。自由交流/质询等开放阶段多挑一位，让讨论不止于一问一答。
   const phase = getCurrentPhase(loaded);
-  const freeChat = phase.permissions.publicChat && phase.id >= 2;
-  const count = freeChat ? Math.min(2, ai.length) : 1;
-  const start = playerContent.length % ai.length;
-  const result: Character[] = [];
-  for (let i = 0; i < count; i++) {
-    result.push(ai[(start + i) % ai.length]);
-  }
-  return result;
+  if (isSequentialCharacterPhase(phase)) return [];
+  return planPublicResponders(loaded, playerContent, { fallbackSalt: "player-message" }).responders;
 }
 
 /**
@@ -143,20 +197,56 @@ export async function runPublicGroupDiscussion(
 
   const turns = Math.max(1, Math.min(opts.turns ?? 3, ai.length));
   // 用已有公共消息数派生起点，使每次点击轮换不同的人先开口（稳定、可复现，不依赖随机源）
-  const msgCount = await prisma.message.count({
-    where: { sessionId: loaded.session.id, channelType: ChannelType.PUBLIC },
-  });
+  const [msgCount, recentAiMessages] = await Promise.all([
+    prisma.message.count({
+      where: { sessionId: loaded.session.id, channelType: ChannelType.PUBLIC },
+    }),
+    prisma.message.findMany({
+      where: {
+        sessionId: loaded.session.id,
+        phase: loaded.currentPhase,
+        channelType: ChannelType.PUBLIC,
+        senderType: SenderType.AI_CHARACTER,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    }),
+  ]);
+  const latestAiMessage = recentAiMessages[0];
+  let recentContents = recentAiMessages.map((message) => message.content);
   const start = ai.length > 0 ? msgCount % ai.length : 0;
+  const spokenIds = new Set<string>();
+  let previousContent = opts.topic ?? latestAiMessage?.content ?? "";
+  let previousSpeakerId: string | undefined = opts.topic ? undefined : latestAiMessage?.senderId;
 
   for (let i = 0; i < turns; i++) {
-    const speaker = ai[(start + i) % ai.length];
-    const directive =
-      i === 0
-        ? `现在是自由交流时间，没有人点名你，但请你主动开口推进讨论：就案情抛出你的疑问、说出你对某个人的怀疑，或为自己辩白。${
-            opts.topic ? `不妨围绕"${opts.topic}"展开。` : ""
-          }直接以角色身份发言（2~4句），点名一两位在场者会让讨论更热烈。`
-        : `公共场合的讨论你都看到了，请你自然地接话：针对前面某位的说法表示赞同、反驳、追问或补充，把话头递给别人，让讨论继续下去（2~4句）。不要重复已经说过的话，也不要等玩家发问。`;
-    await streamCharacterTurn(
+    let planned =
+      previousContent
+        ? pickNextGroupSpeaker(loaded, previousContent, {
+            lastSpeakerId: previousSpeakerId,
+            spokenIds,
+            fallbackSalt: `group-${msgCount}-${i}`,
+          })
+        : { speaker: ai[start], signal: undefined, reason: "phase rotation" };
+    if (i === 0 && planned.speaker?.id === previousSpeakerId) {
+      planned = pickNextGroupSpeaker(loaded, previousContent, {
+        lastSpeakerId: previousSpeakerId,
+        spokenIds,
+        fallbackSalt: `group-avoid-repeat-${msgCount}`,
+      });
+    }
+    const speaker = planned.speaker;
+    if (!speaker) break;
+    spokenIds.add(speaker.id);
+    const directive = buildGroupDiscussionDirective({
+      speakerName: speaker.name,
+      isFirst: i === 0,
+      topic: opts.topic,
+      previousContent,
+      signal: planned.signal,
+      recentContents,
+    });
+    previousContent = await streamCharacterTurn(
       loaded,
       speaker,
       PUBLIC_CHANNEL_KEY,
@@ -164,6 +254,8 @@ export async function runPublicGroupDiscussion(
       send,
       directive
     );
+    recentContents = [previousContent, ...recentContents].slice(0, 5);
+    previousSpeakerId = speaker.id;
   }
 }
 
@@ -182,10 +274,17 @@ export async function streamDMTurn(
   const channelType = opts.channelType ?? ChannelType.DM_BROADCAST;
   const phase = opts.phase ?? loaded.currentPhase;
   const sender: SenderInfo = { type: "DM", id: "dm", name: "DM" };
-  const messageId = `dm-stream-${loaded.session.id}-${phase}-${action}`;
+  const messageId = createStreamMessageId(`dm-${action}`, loaded.session.id);
 
   let full = "";
   let streamError: unknown;
+  send({
+    type: "AGENT_STATUS_CHANGED",
+    agentId: "dm",
+    agentName: "DM",
+    status: "THINKING",
+    reason: action === "PHASE_ANNOUNCE" ? "正在组织阶段宣告" : "正在判断局势",
+  });
   try {
     for await (const chunk of streamDMReply(loaded, directive, action)) {
       full += chunk;
@@ -193,9 +292,42 @@ export async function streamDMTurn(
     }
   } catch (err) {
     streamError = err;
-    if (!full.trim()) {
-      full = `【DM】（信号似乎中断了片刻，请稍候……）`;
+  }
+
+  let integrity = assessTurnIntegrity(full, { streamError });
+  let continuationCount = 0;
+  if (!integrity.complete) {
+    try {
+      const continuation = await dmComplete(
+        loaded,
+        buildContinuationDirective({
+          speakerName: "DM",
+          partialText: full,
+          originalDirective: directive,
+          isDM: true,
+        }),
+        action
+      );
+      if (continuation.trim()) {
+        full = mergeContinuation(full, continuation);
+        continuationCount += 1;
+        send({ type: "MESSAGE_STREAM", chunk: continuation, messageId, sender });
+      }
+    } catch (err) {
+      streamError = streamError ?? err;
     }
+    integrity = {
+      ...assessTurnIntegrity(full, { streamError: undefined }),
+      repaired: continuationCount > 0,
+      continuationCount,
+      streamError: streamError ? String((streamError as Error)?.message ?? streamError) : undefined,
+      reason: continuationCount > 0 ? "continued_after_interruption" : integrity.reason,
+    };
+  }
+
+  full = normalizeTurnText(full);
+  if (!full.trim()) {
+    full = `【DM】（信号似乎中断了片刻，请稍候……）`;
   }
 
   const saved = await saveMessage({
@@ -207,7 +339,11 @@ export async function streamDMTurn(
     senderName: "DM",
     content: full,
     phase,
-    metadata: streamError ? { streamError: String((streamError as Error)?.message ?? streamError) } : undefined,
+    metadata: {
+      turnIntegrity: buildTurnIntegrityMetadata(integrity),
+      dmAction: action,
+      llm: buildLlmMetadata(streamError, continuationCount),
+    },
   });
 
   send({
@@ -217,9 +353,46 @@ export async function streamDMTurn(
     sender,
     phase,
     channelKey: PUBLIC_CHANNEL_KEY,
+    metadata: saved.metadata ? safeObj(saved.metadata) : undefined,
+  });
+  send({
+    type: "AGENT_STATUS_CHANGED",
+    agentId: "dm",
+    agentName: "DM",
+    status: "LISTENING",
+    reason: "持续监听公共讨论",
   });
 
   return full;
 }
 
 export { PUBLIC_CHANNEL_KEY };
+
+function createStreamMessageId(senderId: string, sessionId: string) {
+  const suffix =
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `${Date.now()}-${streamMessageCounter++}`;
+  return `stream-${senderId}-${sessionId}-${suffix}`;
+}
+
+function safeObj(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildLlmMetadata(streamError: unknown, continuationCount: number) {
+  return {
+    provider: PROVIDER,
+    model: MODEL,
+    fallback: PROVIDER === "mock",
+    continuationCount,
+    error: streamError ? String((streamError as Error)?.message ?? streamError) : undefined,
+  };
+}

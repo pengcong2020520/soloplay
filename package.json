@@ -1,7 +1,7 @@
 {
   "name": "aidm",
   "version": "0.1.0",
-  "description": "SoloPlay: local-first AI single-player jubensha with Step-powered DM, NPC agents, TTS, ASR, clues, private chat, voting, and replay.",
+  "description": "SoloPlay: local-first AI single-player jubensha with Step-powered DM, NPC agents, TTS/ASR, evidence cards, consensus tracking, private chat, voting, and replay.",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -11,6 +11,7 @@
     "db:push": "prisma db push",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts",
+    "assets:clues": "tsx scripts/generate-local-clue-assets.mts",
     "db:studio": "prisma studio",
     "e2e": "node scripts/e2e-smoke.mjs",
     "postinstall": "prisma generate"

@@ -20,15 +20,15 @@ export const PROVIDER: Provider = stepApiKey ? "step" : anthropicApiKey ? "anthr
 export const HAS_API_KEY = PROVIDER !== "mock";
 
 // ─── Step（OpenAI 兼容）配置 ───────────────────────────
-const STEP_BASE_URL = process.env.STEP_BASE_URL?.trim() || "https://api.stepfun.com/v1";
-export const FORCED_STEP_MODEL = "step-3.7-flash";
-const STEP_MODEL = FORCED_STEP_MODEL;
+const STEP_BASE_URL = process.env.STEP_BASE_URL?.trim() || "https://api.stepfun.com/step_plan/v1";
+const STEP_MODEL = process.env.STEP_MODEL?.trim() || "step-3.5-flash-2603";
 
 const STEP_VISIBLE_OUTPUT_INSTRUCTION =
   "重要：你必须把给用户看的最终答案写入 chat completion 的 message.content；不要只写 reasoning_content。";
 const STEP_REASONING_EFFORT = "low";
 
 function supportsStepTemperature(model: string): boolean {
+  // 仅保留 3.7 的兼容分支；默认高频 Agent 场景使用 step-3.5-flash-2603。
   // Step 3.7 Flash 是推理/Agent 模型；避免传入采样参数导致 OpenAI-compatible 端点拒绝。
   return !model.toLowerCase().includes("step-3.7-flash");
 }
@@ -36,7 +36,7 @@ function supportsStepTemperature(model: string): boolean {
 function normalizeStepMaxTokens(requested: number): number {
   // 实测 step-3.7-flash 在很小的 max_tokens 下容易只返回 reasoning、content 为空。
   // 官方示例响应也把可见文本放在 message.content；这里给短任务保底空间。
-  return STEP_MODEL === FORCED_STEP_MODEL ? Math.max(requested, 256) : requested;
+  return STEP_MODEL.toLowerCase().includes("step-3.7-flash") ? Math.max(requested, 256) : requested;
 }
 
 // ─── Anthropic 配置 ───────────────────────────────────
@@ -283,12 +283,10 @@ export async function complete(opts: CompleteOptions, mockFn: () => string): Pro
         continue;
       }
       if (attempt < MAX_TRANSIENT_RETRIES) continue;
-      console.warn("[llm.complete] falling back after failure", err);
-      return mockFn();
+      throw err;
     }
   }
-  console.warn("[llm.complete] falling back after failure", lastErr);
-  return mockFn();
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr ?? "LLM complete failed"));
 }
 
 /**
@@ -320,14 +318,10 @@ export async function* streamComplete(
       }
     } catch (err) {
       if (emitted) throw err;
-      console.warn("[llm.streamComplete] falling back after failure", err);
+      throw err;
     }
     if (!emitted) {
-      const text = mockFn();
-      for (let i = 0; i < text.length; i += 6) {
-        yield text.slice(i, i + 6);
-        await sleep(18);
-      }
+      throw new Error("Step stream returned no visible content");
     }
     return;
   }

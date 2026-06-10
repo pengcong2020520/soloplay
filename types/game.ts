@@ -46,6 +46,17 @@ export interface PhaseConfig {
     extraClueOnStuck: boolean;
     hiddenEventOnBored: boolean;
   };
+
+  phaseObjectives?: PhaseObjective[];
+}
+
+export interface PhaseObjective {
+  kind: "OPENING" | "EVIDENCE" | "DEBATE" | "CONSENSUS" | "PLAYER_CONCLUSION" | "DECISION";
+  label: string;
+  required: boolean;
+  minClueActions?: number;
+  minAgentTurns?: number;
+  requiresPlayerConclusion?: boolean;
 }
 
 // ─── 剧本生成 ───────────────────────────────────────
@@ -113,6 +124,13 @@ export interface GeneratedClueCard {
   clueType: ClueType;
   releasePhase: number;
   isSecret: boolean;
+  imageUrl?: string | null;
+  mediaType?: "image" | "video" | "none";
+  videoUrl?: string | null;
+  visualBatchId?: string | null;
+  visualPrompt?: string | null;
+  sequenceIndex?: number | null;
+  sharePolicy?: string | null;
 }
 
 export interface GeneratedPhase {
@@ -143,11 +161,66 @@ export interface SenderInfo {
   name: string;
 }
 
+export type AgentRuntimeStatus =
+  | "IDLE"
+  | "LISTENING"
+  | "PLANNED"
+  | "THINKING"
+  | "SPEAKING"
+  | "RESPONDED"
+  | "WAITING_PLAYER";
+
+export interface PhaseChecklistItem {
+  label: string;
+  done: boolean;
+}
+
+export type PhaseAssessmentStatus =
+  | "RUNNING"
+  | "EVIDENCE_NEEDED"
+  | "CONSENSUS_CHECK"
+  | "NO_CONSENSUS"
+  | "WAITING_PLAYER"
+  | "CAN_CLOSE"
+  | "CLOSING";
+
+export interface ConsensusState {
+  status: "NONE" | "EMERGING" | "AGREED" | "DISPUTED" | "NO_CONSENSUS";
+  agreedPoints: string[];
+  disputedPoints: string[];
+  openQuestions: string[];
+  playerConclusion?: string;
+  lastCheckedAt?: string;
+}
+
+export type ClueActionType =
+  | "DM_RELEASE"
+  | "PLAYER_SHOW_PUBLIC"
+  | "PLAYER_QUESTION_CHARACTER"
+  | "AGENT_SHOW_PUBLIC"
+  | "AGENT_QUESTION_CHARACTER";
+
+export interface ClueActionDTO {
+  actionType: ClueActionType;
+  actorType: "DM" | "PLAYER" | "AI_CHARACTER";
+  actorId: string;
+  actorName: string;
+  targetCharacterId?: string;
+  targetCharacterName?: string;
+  question?: string;
+  visibility: "PUBLIC" | "PRIVATE";
+  clue: ClueCardDTO;
+}
+
 export type GameEvent =
+  | { type: "AGENT_STATUS_CHANGED"; agentId: string; agentName: string; status: AgentRuntimeStatus; reason?: string }
+  | { type: "DM_PHASE_ASSESSMENT"; status: PhaseAssessmentStatus; summary: string; checklist: PhaseChecklistItem[]; focusTopic?: string; consensus?: ConsensusState }
+  | { type: "DISCUSSION_MODE_CHANGED"; enabled: boolean; reason?: string }
   | { type: "MESSAGE_STREAM"; chunk: string; messageId: string; sender: SenderInfo }
-  | { type: "MESSAGE_COMPLETE"; messageId: string; fullContent: string; sender: SenderInfo; phase: number; channelKey: string }
+  | { type: "MESSAGE_COMPLETE"; messageId: string; fullContent: string; sender: SenderInfo; phase: number; channelKey: string; metadata?: Record<string, any> }
   | { type: "PHASE_CHANGED"; newPhase: number; phaseName: string; dmAnnouncement: string }
   | { type: "CLUE_RELEASED"; clueCard: ClueCardDTO; dmDescription: string }
+  | { type: "CLUE_PLAYED"; clueCard: ClueCardDTO; action: ClueActionDTO; messageId: string }
   | { type: "PRIVATE_CHAT_INDICATOR"; participants: string[] }
   | { type: "VOTE_SUBMITTED"; voterName: string }
   | { type: "VOTE_RESULT"; results: VoteResultRow[] }
@@ -160,6 +233,11 @@ export interface ClueCardDTO {
   title: string;
   content: string;
   clueType: ClueType;
+  imageUrl?: string | null;
+  mediaType?: "image" | "video" | "none";
+  videoUrl?: string | null;
+  visualBatchId?: string | null;
+  sequenceIndex?: number | null;
 }
 
 export interface VoteResultRow {
@@ -193,6 +271,7 @@ export interface MessageDTO {
   content: string;
   phase: number;
   createdAt: string;
+  metadata?: Record<string, any> | null;
 }
 
 export interface CharacterPublicDTO {

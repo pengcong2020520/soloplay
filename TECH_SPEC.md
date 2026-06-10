@@ -1,12 +1,78 @@
 # AI 单人剧本杀游戏 — 技术规格文档 (Tech Spec)
 
-**版本**: v1.0
-**日期**: 2026-06-07
-**配套文档**: PRD v1.0
+**版本**: v1.6.1
+**日期**: 2026-06-10
+**配套文档**: PRD v1.6.1
+
+### 版本记录
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v1.0 | 2026-06-07 | 初版技术规划 |
+| v1.1 | 2026-06-10 | 第一轮文档更新：校准当前代码基线，明确本地优先 Next.js + Prisma SQLite + Step/Anthropic/mock 架构，移除 Redis/Supabase 作为当前必需依赖的表述 |
+| v1.2 | 2026-06-10 | 第二轮文档更新：加入剧本杀桌面 UI、Agent/DM 协同状态、自动讨论、phase director、clue director、线索卡牌堆、Step Plan 模型配置与线索图批量生成架构 |
+| v1.3 | 2026-06-10 | 第三轮文档更新：加入阅本阶段主 CTA、非阻塞 ScriptDrawer、玩家手牌分区阅读，以及边读剧本边输入/语音发言的布局约束 |
+| v1.4 | 2026-06-10 | 第四轮文档更新：加入玩家 pending 发言队列、TTS 分段完整播放、真实模式禁用固定 mock fallback、角色风格卡与话题去重 |
+| v1.4.1 | 2026-06-10 | 第五轮第一遍文档更新：校准当前线索实现，确认现状仍为文本线索 + 前端占位图 + 普通消息展示，缺少媒体字段、线索展示事件和 Agent 稳定感知 |
+| v1.5 | 2026-06-10 | 第五轮第二遍文档更新：加入线索资产模型、线索动作 API、Agent 线索展示、Step 图片批量预生成、DM 多模态推进与视频可选占位 |
+| v1.5.1 | 2026-06-10 | 补充 Step 默认对话模型推荐：默认使用 `step-3.5-flash-2603`，保留 `step-3.7-flash` 显式配置兼容分支 |
+| v1.5.2 | 2026-06-10 | 第六轮第一遍文档更新：校准当前 `phase-director` 主要按消息/线索数量判断阶段进度，缺少举证动作、共识状态与玩家阶段结论 |
+| v1.6 | 2026-06-10 | 第六轮第二遍文档更新：加入阶段目标模型、举证动作、共识/分歧状态、阶段结论命令、DM 收束判定和对应 UI |
+| v1.6.1 | 2026-06-10 | 开发后校准：记录已落地的 `clue-visuals`、`clue-director`、`clue-action` API、右侧共识板、阶段收敛指令和线索发放回退逻辑 |
+
+> 文档维护规范：每次新增功能或调整整体技术架构前，必须先阅读 PRD 与 Tech Spec；先更新文档以校准当前实现，再将新增功能与架构写入文档；经用户确认后再进入实现。
 
 ---
 
 ## 一、技术栈选型
+
+### 1.0 当前实现架构基线（v1.1）
+
+当前代码库的实际架构为本地优先单体 Next.js 应用。后续开发应优先遵循本节，而不是早期远期规划中的 Supabase/Redis 架构。
+
+| 层级 | 当前实现 | 说明 |
+|------|----------|------|
+| 前端框架 | Next.js 14 App Router + React | 主游戏页位于 `app/game/[id]/GameClient.tsx` |
+| UI | Tailwind CSS + 本地 `components/ui/*` + lucide-react | 暗色、紧凑、游戏桌面方向 |
+| 后端 API | Next.js Route Handlers | `app/api/game/*`、`app/api/audio/*`、`app/api/script/*` |
+| 数据库 | Prisma + SQLite | 默认 `DATABASE_URL=file:./dev.db`，本地优先 |
+| 认证 | 本地用户/游客账号 + signed cookie | `lib/auth/*` |
+| LLM 抽象 | `lib/anthropic.ts` | provider 优先级：Step > Anthropic > mock |
+| 语音 | `lib/step-audio.ts` + `/api/audio/tts` + `/api/audio/asr` | Step TTS/ASR，可配置模型 |
+| 游戏状态 | Prisma 持久化 + `Message.metadata` + `GameSession.engagementSignals` | 当前不需要 Redis |
+| 实时输出 | SSE | `lib/sse.ts` 与 `lib/client/sse-client.ts` |
+| Agent 编排 | `lib/game/turn.ts`、`lib/game/conversation-director.ts`、`lib/game/turn-integrity.ts` | 已支持点名回应、回合完整性修复 |
+| 阶段配置 | `lib/game/phase-flow.ts`、`lib/game/phase-configs/*` | 各剧本类型阶段流程 |
+| Mock 兜底 | 内置剧本 + mock agent 回复 | 无模型密钥也必须可完整运行 |
+
+#### 1.0.2 当前线索与阶段收敛实现状态（v1.6.1）
+
+本轮已将线索和阶段收敛从“普通聊天文本”升级为结构化游戏动作：
+
+- `prisma/schema.prisma` 的 `Script.visualStyle`、`ClueCard.imageUrl/mediaType/videoUrl/visualBatchId/visualPrompt/sequenceIndex/sharePolicy`、`ClueRelease.releasedBy/releaseReason` 已落地。
+- `lib/game/clue-visuals.ts` 负责构建统一视觉批次字段；`scripts/generate-local-clue-assets.mts` 为内置剧本生成 `public/generated/clues/<script-slug>/` 下的本地 SVG 线索图。
+- `lib/game/clue-director.ts` 负责 `ClueCardDTO`、`ClueActionDTO`、DM 发放 metadata、玩家举证/质询 metadata 和线索回应 directive。
+- `app/api/game/[id]/clue-action/route.ts` 已接管玩家公开举证与质询角色；`Message.metadata.clueAction` 会进入公屏证据卡和 `phase-director`。
+- `app/api/game/[id]/next-phase/route.ts` 发布线索时会发送带媒体字段的 `CLUE_RELEASED`，并把公屏 DM 文本压缩为摘要。若旧剧本 `releasePhase` 与阶段 trigger 不一致，会发放最早一批未公开线索作为回退。
+- `components/game/MessageBubble.tsx` 已根据 `metadata.clueAction`/`metadata.clueRelease` 渲染证据卡；`ClueDeck` 详情改为非阻塞浮层，支持打出与质询。
+- `lib/game/phase-director.ts` 已新增 `ConsensusState` 计算，状态包含 `EVIDENCE_NEEDED/CONSENSUS_CHECK/NO_CONSENSUS/CAN_CLOSE`。
+- `player-command` 已新增 `REQUEST_CONSENSUS/SUBMIT_PHASE_CONCLUSION/MARK_NO_CONSENSUS/REQUEST_DM_CLOSE`。
+- `GameClient` 输入区已新增阶段收敛操作条；`DmHostPanel` 已新增共识板。
+
+后续缺口：
+
+- Agent 主动展示线索目前仍是架构预留，尚未实现完整的 AI 主动 `AGENT_SHOW_PUBLIC` 写库流程。
+- Step Image Editor 批量生图尚未接入运行时；当前使用本地 SVG 资产作为可打包、稳定的多模态占位实现。
+- 视频线索仍保留 `videoUrl` 字段，不作为当前运行依赖。
+
+### 1.0.1 当前不引入 Redis 的原则
+
+当前游戏是单人本地会话，短期记忆主要用于“当前局的可复盘状态”和“前端播放/展示队列”。因此：
+
+- 可复盘状态写入 SQLite，例如消息、线索释放、投票、阶段记录。
+- 临时播放队列保存在前端内存。
+- Agent/DM 的短期运行信号优先放入 `GameSession.engagementSignals` 或 `Message.metadata`。
+- 不引入 Redis 作为默认依赖，除非未来出现多实例部署、跨设备实时同步、后台任务队列或多人实时协作。
 
 ### 推荐栈（Full-Stack TypeScript，适合 Vibe Coding）
 
@@ -1088,67 +1154,681 @@ function canViewPrivateChannel(
 
 ---
 
-## 十一、环境变量
+## 十一、v1.2 新增架构设计
+
+### 11.1 模块总览
+
+新增能力围绕“剧本杀桌面 + DM 自动控场 + 线索卡牌化”展开。模块边界如下：
+
+```text
+app/game/[id]/GameClient.tsx
+  ├─ components/game/AgentStatusRail.tsx     DM/Agent 协同状态
+  ├─ components/game/DmHostPanel.tsx         DM 主持台
+  ├─ components/game/ClueDeck.tsx            右侧线索牌堆
+  ├─ components/game/PlayerHand.tsx          底部玩家手牌
+  ├─ components/game/ScriptDrawer.tsx        常驻剧本抽屉
+  └─ components/game/ActionPanel.tsx         阶段操作按钮
+
+lib/game/
+  ├─ phase-director.ts                       阶段目标、收束、自动推进
+  ├─ conversation-director.ts                Agent 接话规划
+  ├─ clue-director.ts                        线索可见性、打出、讨论触发
+  ├─ clue-visuals.ts                         视觉圣经、线索图批次生成
+  ├─ turn.ts                                 角色/DM 发言生成与落库
+  └─ turn-integrity.ts                       发言完整性修复
+```
+
+### 11.2 协同状态事件模型
+
+SSE 事件需要扩展为可表达过程状态，而不仅是最终消息：
+
+```typescript
+type AgentRuntimeStatus =
+  | "IDLE"
+  | "LISTENING"
+  | "PLANNED"
+  | "THINKING"
+  | "SPEAKING"
+  | "RESPONDED"
+  | "WAITING_PLAYER";
+
+type GameEvent =
+  | { type: "AGENT_STATUS_CHANGED"; agentId: string; agentName: string; status: AgentRuntimeStatus; reason?: string }
+  | { type: "DM_PHASE_ASSESSMENT"; status: "RUNNING" | "EVIDENCE_NEEDED" | "CONSENSUS_CHECK" | "NO_CONSENSUS" | "WAITING_PLAYER" | "CAN_CLOSE" | "CLOSING"; summary: string; checklist: PhaseChecklistItem[]; consensus?: ConsensusState }
+  | { type: "DISCUSSION_MODE_CHANGED"; enabled: boolean; reason?: string }
+  | { type: "MESSAGE_STREAM"; ... }
+  | { type: "MESSAGE_COMPLETE"; ... };
+```
+
+第一版可不新增表结构，运行状态由后端 SSE 推送、前端内存展示；需要复盘的状态摘要写入 `GameSession.engagementSignals`。
+
+### 11.3 Phase Director
+
+`phase-director.ts` 负责 DM 自动控场：
+
+```typescript
+interface PhaseDirectorState {
+  phase: number;
+  status: "RUNNING" | "EVIDENCE_NEEDED" | "CONSENSUS_CHECK" | "NO_CONSENSUS" | "WAITING_PLAYER" | "CAN_CLOSE" | "CLOSING";
+  focusTopic?: string;
+  requiredEvents: PhaseEventCheck[];
+  optionalEvents: PhaseEventCheck[];
+  pendingPlayerAction?: PlayerActionType;
+  nextAction: "CONTINUE_DISCUSSION" | "REQUEST_EVIDENCE" | "CHECK_CONSENSUS" | "WAIT_PLAYER" | "RELEASE_CLUE" | "ADVANCE_PHASE";
+  consensus: ConsensusState;
+}
+
+interface ConsensusState {
+  status: "NONE" | "EMERGING" | "AGREED" | "DISPUTED" | "NO_CONSENSUS";
+  agreedPoints: string[];
+  disputedPoints: string[];
+  openQuestions: string[];
+  playerConclusion?: string;
+  lastCheckedAt?: string;
+}
+
+interface PhaseObjective {
+  kind: "OPENING" | "EVIDENCE" | "DEBATE" | "CONSENSUS" | "PLAYER_CONCLUSION" | "DECISION";
+  label: string;
+  required: boolean;
+  done: boolean;
+}
+```
+
+输入：
+
+- 当前会话、阶段配置、公开消息、线索释放记录、玩家操作记录。
+
+输出：
+
+- 是否继续自动讨论。
+- 是否等待玩家。
+- 是否发布/要求展示线索。
+- 当前是否需要举证。
+- 当前是否已经形成共识、明确分歧或需要玩家提交结论。
+- 是否自动进入下一阶段。
+
+v1.6 判定规则：
+
+- 普通开放阶段不再仅凭 `publicMessages >= 5` 收束。
+- 举证/搜证/质询/推理阶段至少需要一次线索动作进入本阶段记录，或 DM 明确判断本阶段无需新增线索。
+- 如果存在 `consensus.status === "DISPUTED"` 且玩家未选择“无法达成共识”，DM 不应直接推进；应要求补充证据或点名相关角色回应。
+- 如果玩家提交 `playerConclusion`，DM 应优先围绕该结论判定：支持、缺证据、偏离阶段议题或可带着分歧推进。
+- `CAN_CLOSE` 的条件应改为：关键目标完成，且 `AGREED` / `NO_CONSENSUS` / `playerConclusion` 至少满足其一。
+
+### 11.4 自动讨论循环
+
+自动讨论不应简单无限循环，而应由 `phase-director` 与 `conversation-director` 共同控制：
+
+```text
+玩家/阶段事件
+  → phase-director 判断当前阶段目标
+  → conversation-director 规划 2-4 位 Agent
+  → turn.ts 逐个生成并推送状态
+  → TTS 队列逐条展示
+  → phase-director 再判断继续/等待/推进
+```
+
+前端需要提供“自动讨论：开启/暂停”控制。默认开启，但当出现 `WAITING_PLAYER` 时自动暂停，避免 Agent 自说自话。
+
+v1.6 自动讨论循环加入共识检查：
+
+```text
+一轮 Agent 讨论结束
+  → phase-director 提取候选共识/分歧
+  → 若缺少证据：状态 EVIDENCE_NEEDED，提示玩家或 Agent 举证
+  → 若出现稳定共识：状态 CONSENSUS_CHECK，询问玩家是否认可
+  → 若持续冲突：状态 NO_CONSENSUS，展示分歧点并给出补线索/继续质询/带着分歧推进选项
+  → 若玩家提交结论：DM 判定是否 CAN_CLOSE
+```
+
+### 11.5 Clue Director 与线索卡
+
+`clue-director.ts` 管理线索对象的可见性和交互：
+
+```typescript
+interface ClueRuntimeView {
+  clueId: string;
+  owner: "DM" | "PLAYER" | "PUBLIC";
+  visibility: "PRIVATE" | "PUBLIC" | "REVEALED_TO_CHARACTER";
+  playedAtMessageId?: string;
+  targetCharacterId?: string;
+  discussionStatus: "UNSEEN" | "PLAYED" | "DISCUSSED";
+}
+```
+
+v1.5 需要新增结构化线索动作，而不是复用普通聊天消息：
+
+```typescript
+type ClueActionType =
+  | "DM_RELEASE"
+  | "PLAYER_SHOW_PUBLIC"
+  | "PLAYER_QUESTION_CHARACTER"
+  | "AGENT_SHOW_PUBLIC"
+  | "AGENT_QUESTION_CHARACTER";
+
+interface ClueActionPayload {
+  clueId: string;
+  actionType: ClueActionType;
+  actorType: "DM" | "PLAYER" | "AI_CHARACTER";
+  actorId: string;
+  targetCharacterId?: string;
+  question?: string;
+  visibility: "PUBLIC" | "PRIVATE";
+}
+
+interface ClueActionResult {
+  messageId: string;
+  clue: ClueCardDTO;
+  preferredResponderIds: string[];
+  publicSummary: string;
+}
+```
+
+线索打出流程：
+
+```text
+玩家点击线索
+  → 选择 展示给大家 / 质询角色 / 私下展示
+  → POST /api/game/[id]/clue-action
+  → clue-director 校验线索已发布、动作可用、目标合法
+  → 写入结构化 Message.metadata.clueAction
+  → SSE 推送 CLUE_PLAYED / MESSAGE_COMPLETE
+  → 公屏展示线索卡消息，而不是纯文本气泡
+  → conversation-director 优先安排相关 Agent 回应
+  → phase-director 记录阶段目标进度
+```
+
+Agent 主动展示线索流程：
+
+```text
+phase/conversation director 判断当前讨论卡住或某角色需要举证
+  → 选择一张已公开线索
+  → streamCharacterTurn 指令中要求角色拿这张线索说话
+  → clue-director 写入 AGENT_SHOW_PUBLIC 或 AGENT_QUESTION_CHARACTER
+  → 目标角色优先回应，其他角色可接话
+```
+
+约束：
+
+- 未发布线索不能被玩家或 Agent 展示。
+- 隐藏线索只有 DM 释放后才可进入公共线索池。
+- 一张线索可重复被引用，但同一阶段内不要无意义重复展示。
+- 公屏消息必须能渲染为“线索卡消息”，并携带图片、标题、摘要、展示者和目标角色。
+
+### 11.6 线索图片批量生成
+
+`clue-visuals.ts` 不允许单张线索独立生成互不相关的图。每个剧本先生成视觉批次：
+
+```typescript
+interface ScriptVisualBible {
+  styleId: string;
+  era: string;
+  location: string;
+  palette: string[];
+  lighting: string;
+  compositionRules: string;
+  recurringSymbols: string[];
+  negativePrompt: string;
+}
+
+interface ClueImageBatch {
+  batchId: string;
+  scriptId: string;
+  model: string; // step-image-edit-2
+  storyboard: { clueId: string; sequenceIndex: number; framePrompt: string; storyLink: string }[];
+  contactSheetUrl?: string;
+}
+```
+
+Step Plan 图片接口：
+
+- 文生图路径：`POST ${STEP_BASE_URL}/images/generations`
+- 图片编辑路径：`POST ${STEP_BASE_URL}/images/edits`
+- 默认模型：`STEP_IMAGE_MODEL=step-image-edit-2`
+- 本轮默认只使用文生图生成预置资产；图片编辑用于后续重绘/局部修正。
+- 官方当前只确认图片生成/编辑接口，视频生成不作为 V1.5 运行时依赖。
+
+生成策略：
+
+1. 由剧本内容生成 `ScriptVisualBible`。
+2. 根据线索链路生成 storyboard。
+3. 优先生成一张 contact sheet，随后裁切为单张线索图。
+4. 若接口每次只稳定返回单张图，则先生成“风格母版/封面图”，再用同一视觉圣经、同一 seed 策略和 storyboard 顺序生成单张图；该降级路径仍必须保留批次 ID 与统一风格约束。
+5. 裁切或单张生成后的图片写入本地静态目录 `public/generated/clues/<script-slug>/`。
+6. 将 `imageUrl`、`mediaType`、`visualBatchId`、`sequenceIndex` 写入 `ClueCard`。
+7. 若重生成某张，必须带上同一视觉圣经和原批次上下文。
+
+建议新增模块：
+
+```text
+lib/game/clue-director.ts
+  - buildClueActionMessage()
+  - resolveClueResponders()
+  - pickAgentClueAction()
+
+lib/game/clue-visuals.ts
+  - buildScriptVisualBible()
+  - buildClueStoryboard()
+  - generateClueImageBatch()
+  - ensureBuiltinClueAssets()
+
+lib/step-image.ts
+  - generateImage()
+  - editImage()
+  - saveGeneratedImage()
+
+scripts/generate-clue-assets.ts
+  - 为内置测试剧本预生成图片资产，写入 public/generated/clues
+```
+
+数据模型增量：
+
+```prisma
+model Script {
+  visualStyle      String? // JSON: ScriptVisualBible
+}
+
+model ClueCard {
+  imageUrl         String?
+  mediaType        String  @default("image") // image / video / none
+  videoUrl         String?
+  visualBatchId    String?
+  visualPrompt     String?
+  sequenceIndex    Int?
+  sharePolicy      String  @default("PUBLIC_AFTER_RELEASE") // JSON 或枚举字符串
+}
+
+model ClueRelease {
+  releasedBy       String  @default("DM")
+  releaseReason    String?
+}
+```
+
+SQLite 迁移时保持本地优先，不引入外部对象存储；图片使用相对 URL 存储，便于 zip 打包。
+
+SSE 事件增量：
+
+```typescript
+type GameEvent =
+  | { type: "CLUE_RELEASED"; clueCard: ClueCardDTO; dmDescription: string }
+  | { type: "CLUE_PLAYED"; clueCard: ClueCardDTO; action: ClueActionDTO; messageId: string };
+
+interface ClueCardDTO {
+  id: string;
+  title: string;
+  content: string;
+  clueType: ClueType;
+  imageUrl?: string | null;
+  mediaType?: "image" | "video" | "none";
+  videoUrl?: string | null;
+}
+
+interface ClueActionDTO {
+  actionType: ClueActionType;
+  actorType: "DM" | "PLAYER" | "AI_CHARACTER";
+  actorId: string;
+  actorName: string;
+  targetCharacterId?: string;
+  targetCharacterName?: string;
+  question?: string;
+  visibility: "PUBLIC" | "PRIVATE";
+}
+```
+
+前端渲染增量：
+
+- `ClueDeck`：继续负责右侧重叠牌堆，但详情页需要提供“展示给大家”“质询角色”两个动作。
+- `MessageBubble` 或新增 `ClueMessageCard`：根据 `Message.metadata.clueAction` 渲染公屏线索卡。
+- `PlayerHand`：玩家自己的线索卡点击后不直接发送普通文本，而是打开动作选择。
+- `AgentStatusRail`：当 Agent 因线索被点名时显示“查看线索/准备回应”。
+
+DM 多模态推进：
+
+```text
+next-phase 发布线索
+  → save ClueRelease
+  → save DM 摘要消息 metadata.clueRelease
+  → send CLUE_RELEASED(含 imageUrl)
+  → 前端右侧线索牌翻开/高亮
+  → TTS 播报“发布新线索：标题 + 一句摘要”
+```
+
+公屏不再刷完整线索正文，完整内容在右侧线索区和线索卡详情中保留。
+
+### 11.6.1 阶段举证、共识板与收束判定（v1.6）
+
+新增 `phase-director` 子能力：
+
+```text
+lib/game/phase-director.ts
+  - assessPhaseProgress()
+  - extractConsensusState()
+  - classifyPhaseObjectiveProgress()
+  - buildPhaseCloseDecision()
+```
+
+`extractConsensusState()` 第一版可以用规则 + LLM 摘要混合：
+
+1. 读取本阶段公开消息、线索动作、DM 发言和玩家结论。
+2. 优先从结构化 `Message.metadata` 中读取：
+   - `clueAction`
+   - `phaseConclusion`
+   - `consensusCheck`
+   - `noConsensusMarker`
+3. 若结构化信息不足，再调用 summarizer/DM 轻量总结，输出：
+   - `agreedPoints`
+   - `disputedPoints`
+   - `openQuestions`
+   - `recommendedNextAction`
+
+新增消息 metadata：
+
+```typescript
+interface PhaseConclusionMetadata {
+  kind: "phaseConclusion";
+  conclusion: string;
+  confidence?: "LOW" | "MEDIUM" | "HIGH";
+  relatedClueIds?: string[];
+}
+
+interface ConsensusCheckMetadata {
+  kind: "consensusCheck";
+  requestedBy: "PLAYER" | "DM";
+  agreedPoints: string[];
+  disputedPoints: string[];
+  openQuestions: string[];
+}
+
+interface NoConsensusMetadata {
+  kind: "noConsensus";
+  reason: string;
+  disputedPoints: string[];
+}
+```
+
+`player-command` 新增命令：
+
+```typescript
+type PlayerCommand =
+  | "REQUEST_CONSENSUS"
+  | "SUBMIT_PHASE_CONCLUSION"
+  | "MARK_NO_CONSENSUS"
+  | "REQUEST_DM_CLOSE";
+```
+
+处理策略：
+
+- `REQUEST_CONSENSUS`：DM 输出当前共识/分歧/待核查，并推送 `DM_PHASE_ASSESSMENT`。
+- `SUBMIT_PHASE_CONCLUSION`：保存玩家阶段结论，DM 判定是否推进、补线索或点名质询。
+- `MARK_NO_CONSENSUS`：保存分歧状态，DM 决定“补证据/继续质询/带着分歧进入下一阶段”。
+- `REQUEST_DM_CLOSE`：不是强制推进；调用 `buildPhaseCloseDecision()`，由 DM 给出推进或继续行动理由。
+
+阶段配置增量：
+
+```typescript
+interface PhaseConfig {
+  phaseObjectives?: {
+    kind: "EVIDENCE" | "DEBATE" | "CONSENSUS" | "PLAYER_CONCLUSION";
+    label: string;
+    required: boolean;
+    minClueActions?: number;
+    minAgentTurns?: number;
+    requiresPlayerConclusion?: boolean;
+  }[];
+}
+```
+
+第一版可以不立刻迁移所有剧本阶段，只在运行时按阶段名称推断默认目标：
+
+| 阶段关键词 | 默认目标 |
+|------|------|
+| 自由交流/讨论 | 至少一轮交锋 + 玩家参与 + 可选共识检查 |
+| 搜证/线索 | 至少一次线索展示/讨论 + 玩家查看或提交线索判断 |
+| 质询/对质 | 至少一次指定角色质询 + 分歧点明确 |
+| 推理/时间线 | 玩家提交阶段结论或时间线片段 |
+| 最终陈词 | 顺序发言完成后自动进入投票 |
+
+前端 UI 增量：
+
+- `DmHostPanel`：新增“阶段议题”“共识板”“分歧点”“待核查”四块。
+- `AgentStatusRail`：当状态为 `EVIDENCE_NEEDED` 时显示“需要举证”，当 `CONSENSUS_CHECK` 时显示“等待确认共识”。
+- `PlayerHand` 或新增 `ActionPanel`：显示 `[展示线索] [用线索质询] [请求共识检查] [提交阶段结论] [标记无法达成共识] [请求 DM 收束]`。
+- 公屏只显示阶段结论摘要；共识板详情留在右侧，避免刷屏。
+
+Prompt 增量：
+
+- DM prompt 必须知道“收束不是总结聊天，而是判断阶段目标是否达成”。
+- Character directive 在举证阶段必须围绕具体线索回应，不允许泛泛表达怀疑。
+- 当角色被线索质询时，优先回应线索事实，再进行辩解、反驳或转移。
+
+测试资产范围：
+
+- `public/generated/clues/zero-cabin-paradox/`：为《零号舱的悖论》生成 5 张图。
+- `public/generated/clues/misty-manor/`：为《雾港庄园谋杀案》生成 5-6 张图。
+- 若运行环境没有 `STEP_API_KEY`，seed/内置剧本仍引用这些已生成静态图，不触发运行时生图。
+
+### 11.7 桌面 UI 组件
+
+新增组件职责：
+
+| 组件 | 职责 |
+|------|------|
+| `AgentStatusRail` | 左侧展示 DM/Agent 状态、准备中、发言中、等待玩家 |
+| `ClueDeck` | 右侧重叠线索牌堆，hover 上浮、click 详情 |
+| `PlayerHand` | 底部身份卡、私密目标、玩家线索、可用行动 |
+| `ScriptDrawer` | 非阻塞剧本阅读面板，不离开公屏，不阻断文字/语音输入 |
+| `ActionPanel` | 按阶段展示按钮式操作 |
+
+### 11.7.1 阅本阶段开始入口（v1.3）
+
+`GameClient.tsx` 需要在 `currentPhase === 0` 或阶段名包含“阅本”时，在聊天主区域渲染一个主 CTA：
+
+```tsx
+<ReadingStartCard
+  disabled={busy || speechActive}
+  onStart={() => advancePhase()}
+/>
+```
+
+约束：
+
+- CTA 文案为“游戏开始”，位于中间主游戏区。
+- 点击后走现有 `/api/game/[id]/next-phase`，不新增独立 API。
+- 左侧 `StageControlPanel` 的“应急推进”继续保留，但不是阅本完成的主要入口。
+- CTA 不应出现在投票、复盘或其他阶段。
+
+### 11.7.2 非阻塞随身剧本手册（v1.3）
+
+`ScriptDrawer` 从全屏 modal 改为 fixed dock panel：
+
+```tsx
+<div className="pointer-events-none fixed inset-0 z-40">
+  <aside className="pointer-events-auto ...">
+    ...
+  </aside>
+</div>
+```
+
+实现约束：
+
+- 不渲染遮罩，不阻断底部 composer、麦克风按钮与发送按钮。
+- 面板位置避开底部输入区与玩家手牌区：桌面 `top-16 bottom-36`，移动端也必须保留输入区可点击。
+- `PlayerHand` 的卡片点击不再统一打开完整剧本，而是传入分区参数：
+
+```ts
+type ScriptReaderSection = "overview" | "profile" | "private" | "secret" | "goal" | "story";
+onOpenScript(section: ScriptReaderSection): void
+```
+
+- `ScriptDrawer` 内部提供分区切换按钮；分区切换只改变阅读内容，不改聊天 tab、不清空输入、不影响 TTS/ASR。
+
+### 11.7.3 自由讨论插话 composer（v1.3）
+
+公共聊天 composer 的可编辑状态只由阶段权限和游戏结束状态决定：
+
+```ts
+const composerLocked = !canChat || completed;
+```
+
+`busy` 与 `speechActive` 不得禁用 textarea 或麦克风按钮。玩家发送插话时：
+
+- 不调用 `stopTtsPlayback()`，不得打断当前角色语音。
+- 暂缓当前自动续聊计时器；输入、录音、转写、pending 期间都不触发新一轮自动讨论，但不关闭 `autoDiscussionEnabled`，避免玩家发言后退回“一步一聊”。
+- 将消息放入 `pendingPlayerMessage`，等待 `speechActive === false && busy === false` 后再正式提交。
+- 等待期间在 composer 附近展示转圈状态，例如“等待上一位发言结束…”，并允许玩家取消待发送。
+
+### 11.7.4 玩家待发送队列（v1.4）
+
+`GameClient.tsx` 新增状态：
+
+```ts
+type PendingPlayerMessage = {
+  id: string;
+  content: string;
+  createdAt: number;
+  source: "text" | "asr";
+};
+
+const [pendingPlayerMessage, setPendingPlayerMessage] = useState<PendingPlayerMessage | null>(null);
+const [playerSending, setPlayerSending] = useState(false);
+```
+
+发送流程：
+
+1. `sendMessage()` 不直接 `postSse`。
+2. 若 `busy || speechActive`，则写入 `pendingPlayerMessage` 并清空输入框。
+3. ASR 识别成功后调用同一套 `queueOrSubmitPlayerMessage(text, "asr")`；若已有文字草稿，则合并后作为一条发言处理。
+4. 一个 `useEffect` 监听 `pendingPlayerMessage / busy / speechActive`。
+5. 当 `!busy && !speechActive` 时调用 `submitPlayerMessage(content)`。
+6. `submitPlayerMessage` 内部才调用 `/api/game/[id]/message`，让该句成为后续 Agent 的上下文。
+
+### 11.7.5 TTS 分段完整播放（v1.4）
+
+`lib/step-audio.ts` 不再把文本直接 `slice(0, TTS_MAX_CHARS)` 后丢弃后文。改为：
+
+- 新增 `splitTtsText(text, maxChars)`，按中文/英文句末标点切分。
+- `/api/audio/tts` 仍一次只合成一个片段，保持接口简单。
+- `components/game/tts-playback.ts` 在 `queueTtsPlayback` 内把同一消息拆为多个片段队列项。
+- 同一 `messageId` 的所有片段必须连续播放；只在第一段 `onStart` 时展示消息，只在最后一段 `onFinish` 时标记发言结束。
+
+### 11.7.6 真实模式禁用固定 mock fallback（v1.4）
+
+`lib/anthropic.ts` 的真实 provider 行为调整：
+
+- `PROVIDER === "mock"` 时保留 mock。
+- `PROVIDER !== "mock"` 时，`complete` / `streamComplete` 失败不得返回固定角色 mock 文本。
+- 流式失败且未发出任何 chunk 时抛出错误，由 `turn.ts` 生成“角色正在整理措辞”的可观测状态或重试。
+- `Message.metadata` 需要记录 `provider/model/fallback/errorReason`，方便判断一句话是否真实模型生成。
+
+### 11.7.7 角色风格卡与话题去重（v1.4）
+
+`lib/agents/prompts/character.ts` 新增基于角色信息的语言风格卡：
+
+- 句式长短、情绪张力、是否爱反问、是否迂回、是否锋利。
+- 明确禁止“AI 总结腔”和固定开头。
+
+`lib/game/conversation-director.ts` 新增轻量话题指纹：
+
+```ts
+fingerprint = `${speakerName}:${mentionedNames.join(",")}:${evidenceKeywords.join(",")}`;
+```
+
+最近 5 条公共发言内已出现的指纹，在选择下一位说话人和生成 directive 时应被避开或要求换角度。
+
+### 11.8 Step Plan 模型配置
+
+禁止在代码里强制 Step 具体模型。所有 Step 模型通过环境变量配置：
 
 ```bash
-# .env.local
+STEP_BASE_URL=https://api.stepfun.com/step_plan/v1
+STEP_MODEL=step-3.5-flash-2603
+STEP_TTS_MODEL=stepaudio-2.5-tts
+STEP_REALTIME_AUDIO_MODEL=stepaudio-2.5-realtime
+STEP_ASR_MODEL=stepaudio-2.5-asr
+STEP_IMAGE_MODEL=step-image-edit-2
+```
 
-# Anthropic
-ANTHROPIC_API_KEY=sk-ant-...
+`lib/anthropic.ts` 默认使用 `step-3.5-flash-2603`，更适合本项目高频、多 Agent、短轮次的实时对话场景；同时必须继续读取 `STEP_MODEL`，允许部署者显式切换模型。Step 3.7 Flash 的特殊参数处理可以保留为“按模型名条件判断”，但不能覆盖用户配置。
 
-# Supabase
-NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
-SUPABASE_SERVICE_ROLE_KEY=eyJ...
+语音架构：
 
-# Database
-DATABASE_URL=postgresql://...
+- HTTP TTS/ASR 继续作为稳定 fallback。
+- Realtime 语音新增独立模块，不替换现有 HTTP 路径。
+- 前端 TTS 展示队列继续作为“文字何时沉淀到公屏”的控制层。
 
-# Upstash Redis（可选，用于游戏状态缓存）
-UPSTASH_REDIS_REST_URL=https://...
-UPSTASH_REDIS_REST_TOKEN=...
+---
 
-# Next.js
-NEXTAUTH_SECRET=...
-NEXTAUTH_URL=http://localhost:3000
+## 十二、环境变量
+
+```bash
+# Step / Step Plan
+STEP_API_KEY=
+STEP_BASE_URL=https://api.stepfun.com/step_plan/v1
+STEP_MODEL=step-3.5-flash-2603
+STEP_TTS_MODEL=stepaudio-2.5-tts
+STEP_REALTIME_AUDIO_MODEL=stepaudio-2.5-realtime
+STEP_ASR_MODEL=stepaudio-2.5-asr
+STEP_IMAGE_MODEL=step-image-edit-2
+
+# Anthropic fallback
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-sonnet-4-6
+
+# Database: local-first SQLite by default
+DATABASE_URL="file:./dev.db"
+
+# Auth
+AUTH_SECRET=
+
+# Runtime
+LLM_TIMEOUT_MS=40000
+STEP_AUDIO_TIMEOUT_MS=60000
+STEP_TTS_TIMEOUT_MS=25000
 ```
 
 ---
 
-## 十二、开发优先级（V1 实现顺序）
+## 十三、开发优先级（v1.2 实现顺序）
 
 ```
-Phase 1（核心骨架）
-  ✦ 数据库 schema + Prisma 初始化（含 UserPreferences 结构化模型）
-  ✦ Supabase Auth 接入
-  ✦ 体验意图引导 + AI 剧本生成问卷流程（含第零步体验意图）
-  ✦ DM + 角色 Agent 基础调用（含 playerMode 注入）
+Phase 0（文档与配置前置）
+  ✦ PRD / Tech Spec 两轮更新并经用户确认
+  ✦ 删除 Step 强制模型，完成模型配置化
+  ✦ 更新 README / .env.example
 
-Phase 2（游戏主流程 — 两种核心体验路径同步跑通）
-  ✦ 游戏会话创建与启动
-  ✦ 公共频道聊天（SSE 流式输出）
-  ✦ DM 阶段推进 + 体验自适应基础版（卡顿检测 + 提示）
-  ✦ 推理本完整流程跑通（角色扮演模式）
-  ✦ 侦探模式完整流程跑通（侦探模式是核心体验路径之一，不可推迟）
-  ✦ 玩家节奏控制指令（HINT / PAUSE / RECAP）
+Phase 1（协同状态可视化）
+  ✦ AgentStatusRail
+  ✦ 等待态与发言态
+  ✦ DM 主持台协同监控
+  ✦ SSE 状态事件
 
-Phase 3（完整功能）
-  ✦ 私聊频道（玩家↔角色 / 角色↔角色）
-  ✦ 线索板
-  ✦ 结局判定模块（含差异化判定逻辑）
-  ✦ 复盘系统（含私聊回放、胜负分析）
-  ✦ 游戏后体验反馈模块
-  ✦ 上传剧本解析
+Phase 2（桌面布局）
+  ✦ 中间公屏记录瘦身
+  ✦ 右侧线索牌堆
+  ✦ 底部 PlayerHand
+  ✦ ScriptDrawer 常驻剧本入口
 
-Phase 4（剧本类型扩展）
-  ✦ 剩余5种剧本类型阶段配置（情感/欢乐/硬核/恐怖/还原）
-  ✦ 特殊机制（恐怖事件/随机事件/情感触发事件）
-  ✦ DM 体验自适应完整版（无聊检测 + 隐藏事件触发）
+Phase 3（自动讨论与 DM 自动推进）
+  ✦ phase-director
+  ✦ 自动讨论默认开启
+  ✦ WAITING_PLAYER / CAN_CLOSE 阶段状态
+  ✦ 应急推进弱化为 fallback
 
-Phase 5（个性化与打磨）
-  ✦ 体验偏好档案自动构建
-  ✦ 下次游戏推荐系统
-  ✦ 历史记录管理 + 体验标签
-  ✦ 性能优化（Agent 并发 / 上下文压缩）
-  ✦ 错误处理完善 + 体验质量监控指标
+Phase 4（线索卡交互）
+  ✦ clue-director
+  ✦ 线索打出到公屏
+  ✦ 指定角色质询
+  ✦ Agent 感知已展示线索
+
+Phase 5（多模态线索图）
+  ✦ 视觉圣经
+  ✦ storyboard
+  ✦ contact sheet 批量生成
+  ✦ 裁切与线索绑定
+
+Phase 6（Realtime 语音）
+  ✦ stepaudio-2.5-realtime 独立通道
+  ✦ HTTP TTS fallback
+  ✦ 多角色连续播报优化
 ```

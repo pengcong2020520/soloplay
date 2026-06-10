@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { loadSession, getCurrentPhase } from "@/lib/game/session";
+import { loadSession, getCurrentPhase, getPlayerCharacter } from "@/lib/game/session";
+import type { LoadedSession } from "@/lib/game/session";
 import { resolveUserId } from "@/lib/auth/current-user";
 import { sseResponse } from "@/lib/sse";
 import {
@@ -15,7 +16,12 @@ import {
   PlayerCommand,
   GameStatus,
   PUBLIC_CHANNEL_KEY,
+  PlayerMode,
 } from "@/lib/constants";
+import { isSequentialCharacterPhase } from "@/lib/game/phase-flow";
+import { assessPhaseProgress, emitPhaseAssessment, maybeAutoAdvancePhase } from "@/lib/game/phase-director";
+import { buildDmClueReleaseMetadata, clueCardToDto } from "@/lib/game/clue-director";
+import type { ConsensusState } from "@/types/game";
 
 export const maxDuration = 120;
 
@@ -82,7 +88,13 @@ export async function POST(
         });
         if (pending) {
           await prisma.clueRelease.create({
-            data: { sessionId: params.id, clueCardId: pending.id, phase: updated.currentPhase },
+            data: {
+              sessionId: params.id,
+              clueCardId: pending.id,
+              phase: updated.currentPhase,
+              releasedBy: "DM",
+              releaseReason: "玩家降低难度后额外释放",
+            },
           });
           await saveMessage({
             sessionId: params.id,
@@ -91,18 +103,13 @@ export async function POST(
             senderType: SenderType.DM,
             senderId: "dm",
             senderName: "DM",
-            content: `【DM】（为你额外释放一条线索）【${pending.title}】：${pending.content}`,
+            content: `【DM】额外发放线索卡《${pending.title}》。线索已沉淀到右侧牌堆，可用于举证或质询。`,
             phase: updated.currentPhase,
-            metadata: { clueId: pending.id },
+            metadata: buildDmClueReleaseMetadata(pending, "玩家降低难度后额外释放"),
           });
           send({
             type: "CLUE_RELEASED",
-            clueCard: {
-              id: pending.id,
-              title: pending.title,
-              content: pending.content,
-              clueType: pending.clueType as any,
-            },
+            clueCard: clueCardToDto(pending),
             dmDescription: "",
           });
         }
@@ -148,8 +155,148 @@ export async function POST(
           send({ type: "ERROR", message: "当前阶段尚未开放公共讨论。" });
           return;
         }
+        if (isSequentialCharacterPhase(phase)) {
+          send({ type: "ERROR", message: "当前是顺序发言阶段，请先完成本阶段发言，DM 会自动推进。" });
+          return;
+        }
+        send({
+          type: "DISCUSSION_MODE_CHANGED",
+          enabled: true,
+          reason: cmdParams.auto ? "自动讨论继续推进" : "玩家请求大家讨论",
+        });
+        await emitPhaseAssessment(loaded, send);
         // 让在场 AI 角色在公共频道彼此你来我往地讨论一轮（玩家围观，可随时插话）
         await runPublicGroupDiscussion(loaded, send, { turns: 3 });
+        await maybeAutoAdvancePhase(loaded, send, {
+          source: cmdParams.auto ? "AUTO_DISCUSSION" : "MANUAL_DISCUSSION",
+        });
+        break;
+      }
+      case PlayerCommand.REQUEST_CONSENSUS: {
+        const assessment = await assessPhaseProgress(loaded);
+        const consensus = assessment.consensus;
+        const content = consensus
+          ? buildConsensusCheckText(consensus)
+          : "【DM】当前还没有形成稳定共识。请先围绕已公开线索继续举证或质询。";
+        const saved = await saveMessage({
+          sessionId: params.id,
+          channelType: ChannelType.DM_HINT,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          senderType: SenderType.DM,
+          senderId: "dm",
+          senderName: "DM",
+          content,
+          phase: loaded.currentPhase,
+          metadata: { consensusCheck: consensus, dmAction: "CONSENSUS_CHECK" },
+        });
+        send({
+          type: "MESSAGE_COMPLETE",
+          messageId: saved.id,
+          fullContent: content,
+          sender: { type: "DM", id: "dm", name: "DM" },
+          phase: loaded.currentPhase,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          metadata: saved.metadata ? safeObj(saved.metadata) : undefined,
+        });
+        await emitPhaseAssessment(loaded, send);
+        break;
+      }
+      case PlayerCommand.SUBMIT_PHASE_CONCLUSION: {
+        const conclusion = String(cmdParams.conclusion ?? "").trim();
+        if (!conclusion) {
+          send({ type: "ERROR", message: "请先写下你希望提交的阶段结论。" });
+          return;
+        }
+        const playerName = getPlayerDisplayName(loaded);
+        const saved = await saveMessage({
+          sessionId: params.id,
+          channelType: ChannelType.PUBLIC,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          senderType: SenderType.PLAYER,
+          senderId: "player",
+          senderName: playerName,
+          content: `【阶段结论】${conclusion}`,
+          phase: loaded.currentPhase,
+          metadata: {
+            phaseConclusion: {
+              conclusion,
+              submittedAt: new Date().toISOString(),
+            },
+          },
+        });
+        send({
+          type: "MESSAGE_COMPLETE",
+          messageId: saved.id,
+          fullContent: saved.content,
+          sender: { type: "PLAYER", id: "player", name: playerName },
+          phase: loaded.currentPhase,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          metadata: saved.metadata ? safeObj(saved.metadata) : undefined,
+        });
+        const advanced = await maybeAutoAdvancePhase(loaded, send, { source: "PLAYER_MESSAGE" });
+        if (!advanced) {
+          await streamDMTurn(
+            loaded,
+            `玩家提交了阶段结论：「${conclusion}」。请作为 DM 判断这个结论是否足以收束本阶段：肯定已达成的共识，点出仍需保留的悬念，并明确还差哪一步操作。`,
+            "GUIDE",
+            send
+          );
+          await emitPhaseAssessment(loaded, send);
+        }
+        break;
+      }
+      case PlayerCommand.MARK_NO_CONSENSUS: {
+        const reason = String(cmdParams.reason ?? "").trim() || "目前大家还没有形成一致结论。";
+        const disputedPoints = Array.isArray(cmdParams.disputedPoints)
+          ? cmdParams.disputedPoints.map((item: unknown) => String(item).trim()).filter(Boolean)
+          : [reason];
+        const playerName = getPlayerDisplayName(loaded);
+        const saved = await saveMessage({
+          sessionId: params.id,
+          channelType: ChannelType.PUBLIC,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          senderType: SenderType.PLAYER,
+          senderId: "player",
+          senderName: playerName,
+          content: `【暂未达成共识】${reason}`,
+          phase: loaded.currentPhase,
+          metadata: {
+            noConsensus: {
+              reason,
+              disputedPoints,
+              markedAt: new Date().toISOString(),
+            },
+          },
+        });
+        send({
+          type: "MESSAGE_COMPLETE",
+          messageId: saved.id,
+          fullContent: saved.content,
+          sender: { type: "PLAYER", id: "player", name: playerName },
+          phase: loaded.currentPhase,
+          channelKey: PUBLIC_CHANNEL_KEY,
+          metadata: saved.metadata ? safeObj(saved.metadata) : undefined,
+        });
+        await streamDMTurn(
+          loaded,
+          `玩家标记本阶段暂未达成共识，原因是：「${reason}」。请作为 DM 梳理当前最大分歧，给出下一步最值得验证的一张线索或一个角色，不要强行推进。`,
+          "GUIDE",
+          send
+        );
+        await emitPhaseAssessment(loaded, send);
+        break;
+      }
+      case PlayerCommand.REQUEST_DM_CLOSE: {
+        const advanced = await maybeAutoAdvancePhase(loaded, send, { source: "PLAYER_MESSAGE" });
+        if (!advanced) {
+          await streamDMTurn(
+            loaded,
+            "玩家请求 DM 收束本阶段。请检查当前共识、分歧和已举证线索；如果还不能结束，明确告诉玩家还差哪一步操作。",
+            "GUIDE",
+            send
+          );
+          await emitPhaseAssessment(loaded, send);
+        }
         break;
       }
       case PlayerCommand.SKIP_PHASE: {
@@ -182,4 +329,29 @@ export async function POST(
         send({ type: "ERROR", message: "未知指令：" + command });
     }
   });
+}
+
+function getPlayerDisplayName(loaded: LoadedSession) {
+  const playerSc = getPlayerCharacter(loaded);
+  return loaded?.playerMode === PlayerMode.ROLE_PLAY && playerSc
+    ? playerSc.character.name
+    : "侦探";
+}
+
+function buildConsensusCheckText(consensus: ConsensusState) {
+  const agreed = consensus.agreedPoints.length ? consensus.agreedPoints.join("；") : "暂未形成明确共识";
+  const disputed = consensus.disputedPoints.length ? consensus.disputedPoints.join("；") : "主要分歧暂不明显";
+  const open = consensus.openQuestions.length ? consensus.openQuestions.join("；") : "暂无新的待核查问题";
+  return `【DM 共识检查】已形成：${agreed}\n仍有分歧：${disputed}\n待核查：${open}`;
+}
+
+function safeObj(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

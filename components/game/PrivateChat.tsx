@@ -4,6 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { MessageBubble } from "@/components/game/MessageBubble";
+import {
+  queueTtsPlayback,
+  unlockTtsPlayback,
+  type TtsPlaybackProfile,
+} from "@/components/game/tts-playback";
 import { postSse } from "@/lib/client/sse-client";
 import {
   DEFAULT_SCRIPT_THEME,
@@ -27,11 +32,13 @@ export function PrivateChat({
   characters,
   privateEnabled,
   theme = DEFAULT_SCRIPT_THEME,
+  ttsEnabled = true,
 }: {
   sessionId: string;
-  characters: { id: string; name: string; occupation: string | null; assignedTo: string; avatarUrl?: string }[];
+  characters: { id: string; name: string; gender?: string | null; occupation: string | null; publicProfile?: string; assignedTo: string; avatarUrl?: string }[];
   privateEnabled: boolean;
   theme?: ScriptTheme;
+  ttsEnabled?: boolean;
 }) {
   const [channels, setChannels] = useState<PrivateChannelInfo[]>([]);
   const [active, setActive] = useState<PrivateChannelInfo | null>(null);
@@ -63,21 +70,26 @@ export function PrivateChat({
       setStreaming((p) => (p ? { ...p, content: p.content + e.chunk } : { name: e.sender.name, content: e.chunk }));
     } else if (e.type === "MESSAGE_COMPLETE") {
       setStreaming(null);
+      const completedMessage = {
+        id: e.messageId, channelType: "PRIVATE" as any, channelKey: e.channelKey,
+        senderType: e.sender.type as any, senderId: e.sender.id, senderName: e.sender.name,
+        content: e.fullContent, phase: e.phase, createdAt: new Date().toISOString(),
+      } satisfies MessageDTO;
       setMessages((prev) =>
         prev.some((m) => m.id === e.messageId)
           ? prev
-          : [...prev, {
-              id: e.messageId, channelType: "PRIVATE" as any, channelKey: e.channelKey,
-              senderType: e.sender.type as any, senderId: e.sender.id, senderName: e.sender.name,
-              content: e.fullContent, phase: e.phase, createdAt: new Date().toISOString(),
-            }]
+          : [...prev, completedMessage]
       );
+      if (ttsEnabled && completedMessage.senderType !== "PLAYER") {
+        queueTtsPlayback(buildPrivateTtsProfile(completedMessage, characters));
+      }
     }
   }
 
   async function send() {
     const content = input.trim();
     if (!content || !active || busy) return;
+    void unlockTtsPlayback();
     setInput("");
     setBusy(true);
     const channelKey = getPrivateChannelKey("player", active.characterId);
@@ -151,6 +163,7 @@ export function PrivateChat({
             msg={m}
             avatarUrl={characters.find((c) => c.id === m.senderId)?.avatarUrl}
             theme={theme}
+            ttsProfile={buildPrivateTtsProfile(m, characters)}
           />
         ))}
         {streaming && (
@@ -188,4 +201,20 @@ function SmallAvatar({ src, name }: { src?: string; name: string }) {
       {src ? <img src={src} alt={`${name}头像`} className="h-full w-full object-cover" /> : name.slice(0, 1)}
     </div>
   );
+}
+
+function buildPrivateTtsProfile(
+  message: Pick<MessageDTO, "senderType" | "senderId" | "senderName" | "content">,
+  characters: { id: string; name: string; gender?: string | null; occupation: string | null; publicProfile?: string }[]
+): TtsPlaybackProfile {
+  const character = characters.find((c) => c.id === message.senderId);
+  return {
+    text: message.content,
+    senderType: message.senderType,
+    senderId: message.senderId,
+    senderName: message.senderName,
+    gender: character?.gender,
+    occupation: character?.occupation,
+    publicProfile: character?.publicProfile,
+  };
 }

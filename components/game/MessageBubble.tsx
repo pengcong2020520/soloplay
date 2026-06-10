@@ -3,73 +3,60 @@
 import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { RichMessageText } from "@/components/game/RichMessageText";
+import { speakTtsNow, type TtsPlaybackProfile } from "@/components/game/tts-playback";
 import {
   DEFAULT_SCRIPT_THEME,
   scriptThemeStyle,
   type ScriptTheme,
 } from "@/lib/script-themes";
-import type { MessageDTO } from "@/types/game";
-import { Loader2, Volume2 } from "lucide-react";
+import type { ClueActionDTO, MessageDTO } from "@/types/game";
+import { Loader2, ScrollText, Volume2 } from "lucide-react";
 
 export function MessageBubble({
   msg,
   streaming = false,
   avatarUrl,
   theme = DEFAULT_SCRIPT_THEME,
+  ttsProfile,
 }: {
-  msg: Pick<MessageDTO, "senderType" | "senderName" | "content" | "channelType">;
+  msg: Pick<MessageDTO, "senderType" | "senderName" | "content" | "channelType" | "metadata">;
   streaming?: boolean;
   avatarUrl?: string;
   theme?: ScriptTheme;
+  ttsProfile?: TtsPlaybackProfile;
 }) {
   const isPlayer = msg.senderType === "PLAYER";
   const isDM = msg.senderType === "DM";
   const isPrivate = msg.channelType === "PRIVATE";
   const [speaking, setSpeaking] = useState(false);
   const themeStyle = scriptThemeStyle(theme);
+  const clueAction = extractClueAction(msg.metadata);
+  const clueReleaseAction = extractClueReleaseAction(msg.metadata);
 
   async function speak() {
     const text = msg.content.trim();
     if (!text || speaking) return;
     setSpeaking(true);
     try {
-      const res = await fetch("/api/audio/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? "TTS 生成失败");
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      let timeout: ReturnType<typeof setTimeout> | null = null;
-      const cleanup = () => {
-        if (timeout) clearTimeout(timeout);
-        URL.revokeObjectURL(url);
-        setSpeaking(false);
-      };
-      audio.onended = cleanup;
-      audio.onerror = cleanup;
-      timeout = setTimeout(cleanup, 30_000);
-      void audio.play().catch((err) => {
-        console.warn("[tts] play failed", err);
-        cleanup();
+      await speakTtsNow(ttsProfile ?? {
+        text,
+        senderType: msg.senderType,
+        senderName: msg.senderName,
       });
     } catch (err) {
-      setSpeaking(false);
       console.warn("[tts] play failed", err);
+    } finally {
+      setSpeaking(false);
     }
   }
 
   if (isDM) {
     return (
       <div className="my-3 animate-fade-in" style={themeStyle}>
-        <div className="script-bubble relative mx-auto max-w-[92%] rounded-lg px-4 py-3 pr-10 text-sm leading-relaxed text-amber-50">
+        <div className="script-bubble relative mx-auto max-w-[92%] rounded-lg px-4 py-3 pr-10 text-[13px] leading-relaxed text-amber-50">
           <div className="mb-1 text-[11px] font-semibold text-primary/90">DM · {theme.label}</div>
-          <RichMessageText text={msg.content} />
+          {clueReleaseAction && <EvidenceCard action={clueReleaseAction} compact />}
+          {!clueReleaseAction && <RichMessageText text={msg.content} />}
           {streaming && <Cursor />}
           {!streaming && <SpeakButton speaking={speaking} onClick={speak} />}
         </div>
@@ -95,19 +82,77 @@ export function MessageBubble({
         )}
         <div
           className={cn(
-            "script-bubble rounded-2xl px-4 py-2.5 text-sm leading-relaxed text-foreground",
+            "script-bubble rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed text-foreground",
             isPlayer
               ? "rounded-br-sm border-primary/45"
             : "rounded-bl-sm"
           )}
         >
-          <RichMessageText text={msg.content} />
+          {clueAction ? (
+            <EvidenceCard action={clueAction} />
+          ) : (
+            <RichMessageText text={msg.content} />
+          )}
           {streaming && <Cursor />}
         </div>
       </div>
       {isPlayer && avatar}
     </div>
   );
+}
+
+function EvidenceCard({ action, compact = false }: { action: ClueActionDTO; compact?: boolean }) {
+  const clue = action.clue;
+  return (
+    <div className={cn("overflow-hidden rounded-md border border-primary/25 bg-background/45", compact ? "mt-1" : "")}>
+      {clue.imageUrl && (
+        <div
+          className={cn("border-b border-primary/20 bg-secondary bg-cover bg-center", compact ? "h-20" : "h-28")}
+          style={{ backgroundImage: `url("${clue.imageUrl}")` }}
+        />
+      )}
+      <div className={cn("space-y-2", compact ? "p-2" : "p-3")}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-primary">
+              <ScrollText className="h-3.5 w-3.5" />
+              {actionLabel(action)}
+            </div>
+            <div className="mt-1 line-clamp-2 font-semibold leading-tight">{clue.title}</div>
+          </div>
+          <span className="shrink-0 rounded-full border border-primary/25 px-2 py-0.5 text-[10px] text-primary/90">
+            {clue.clueType}
+          </span>
+        </div>
+        {!compact && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {clue.content}
+          </p>
+        )}
+        {action.question && (
+          <p className="rounded border border-border/70 bg-background/55 px-2 py-1.5 text-xs leading-relaxed text-foreground">
+            质询：{action.question}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function actionLabel(action: ClueActionDTO) {
+  if (action.actionType === "DM_RELEASE") return "DM 发放线索";
+  if (action.targetCharacterName) return `${action.actorName}质询${action.targetCharacterName}`;
+  return `${action.actorName}公开举证`;
+}
+
+function extractClueAction(metadata?: Record<string, any> | null): ClueActionDTO | null {
+  const action = metadata?.clueAction;
+  return action && typeof action === "object" ? (action as ClueActionDTO) : null;
+}
+
+function extractClueReleaseAction(metadata?: Record<string, any> | null): ClueActionDTO | null {
+  const action = metadata?.clueRelease?.action;
+  return action && typeof action === "object" ? (action as ClueActionDTO) : null;
 }
 
 function Cursor() {

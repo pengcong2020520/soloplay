@@ -63,7 +63,7 @@ export async function* streamDMReply(
 
   yield* streamComplete(
     { system, messages, maxTokens: 700, temperature: 0.7 },
-    () => mockDMReply(loaded, action)
+    () => mockDMReply(loaded, action, directive)
   );
 }
 
@@ -78,11 +78,11 @@ export async function dmComplete(
   const messages: ChatMessage[] = [...history, { role: "user", content: directive }];
   return complete(
     { system, messages, maxTokens: 700, temperature: 0.7 },
-    () => mockDMReply(loaded, action)
+    () => mockDMReply(loaded, action, directive)
   );
 }
 
-function mockDMReply(loaded: LoadedSession, action: DMActionType): string {
+function mockDMReply(loaded: LoadedSession, action: DMActionType, directive = ""): string {
   const phase = getCurrentPhase(loaded);
   switch (action) {
     case "PHASE_ANNOUNCE":
@@ -92,6 +92,15 @@ function mockDMReply(loaded: LoadedSession, action: DMActionType): string {
     case "RECAP":
       return `【DM】回顾一下：雾港庄园的盐商沈鸿庄在六十大寿当夜遇害，书房自内反锁，唯一钥匙在死者身上。当晚共六人留宿，每个人都有自己的盘算。目前我们正处于「${phase.name}」。`;
     case "GUIDE":
+      if (/自我介绍|介绍完毕/.test(directive)) {
+        return `【DM】所有人的自我介绍已经完成，人物关系和立场已经摆上桌面。接下来进入下一环节，请留意每个人刚才没有说出口的部分。`;
+      }
+      if (/最终陈词|投票阶段|进入投票/.test(directive)) {
+        return `【DM】最终陈词到此结束，每个人的态度都已经明确。接下来进入投票，请根据证据、动机与时间线做出你的判断。`;
+      }
+      if (/太难|降低难度|加快线索/.test(directive)) {
+        return `【DM】我会加快线索释放。先别急着锁定凶手，回到时间线：谁的行动路径最需要被遮掩？`;
+      }
       return `【DM】讨论似乎陷入了僵局。各位不妨重新梳理一下：案发当晚，每个人究竟身在何处？`;
     case "CLUE_DESCRIPTION":
       return `【DM】（一阵阴风掠过回廊）新的线索浮出水面，请各位仔细查验。`;

@@ -7,33 +7,55 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { MessageBubble } from "@/components/game/MessageBubble";
+import { AgentStatusRail, type AgentStatusItem } from "@/components/game/AgentStatusRail";
+import type { ClueDeckItem } from "@/components/game/ClueDeck";
 import { RichMessageText, stripMarkdownSyntax } from "@/components/game/RichMessageText";
 import { PhaseIndicator } from "@/components/game/PhaseIndicator";
+import { PlayerHand } from "@/components/game/PlayerHand";
 import { PrivateChat } from "@/components/game/PrivateChat";
+import { ScriptDrawer, type ScriptReaderSection } from "@/components/game/ScriptDrawer";
+import {
+  DmHostPanel,
+  StageControlPanel,
+  type DmHostPanelModel,
+} from "@/components/game/DmHostPanel";
+import {
+  queueTtsPlayback,
+  setTtsPlaybackEnabled,
+  subscribeTtsPlaybackState,
+  unlockTtsPlayback,
+  type TtsPlaybackProfile,
+} from "@/components/game/tts-playback";
 import { postSse } from "@/lib/client/sse-client";
 import { ScriptTypeLabel, PlayerModeLabel, DifficultyLabel } from "@/lib/constants";
 import { getScriptTheme, scriptThemeStyle } from "@/lib/script-themes";
 import { cn } from "@/lib/utils";
-import type { GameEvent, MessageDTO } from "@/types/game";
+import type {
+  AgentRuntimeStatus,
+  ConsensusState,
+  GameEvent,
+  MessageDTO,
+  PhaseAssessmentStatus,
+  PhaseChecklistItem,
+} from "@/types/game";
 import {
   Loader2,
   Send,
   Lightbulb,
-  RotateCcw,
-  SkipForward,
-  ArrowRight,
   ScrollText,
   Users,
   BookOpen,
   Vote as VoteIcon,
   MessageSquare,
-  Pause,
+  Play,
   Clock,
   RefreshCw,
   UserRound,
   Mic,
   Square,
   X,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 
 /** 阶段超时后，给玩家的宽限秒数（到点不硬切，先提示，可手动停留） */
@@ -73,14 +95,14 @@ interface GameState {
   usingMockData: boolean;
   phaseStartedAt: string | null;
   phaseTimeLimitSec: number | null;
-  characters: { id: string; name: string; occupation: string | null; publicProfile: string; assignedTo: string; avatarUrl?: string }[];
+  characters: { id: string; name: string; gender?: string | null; occupation: string | null; publicProfile: string; assignedTo: string; avatarUrl?: string }[];
   playerCharacter: {
     name: string; gender: string | null; occupation: string | null;
     publicProfile: string;
     privateStory: string; secrets: string; hiddenGoal: string; victoryCondition: string;
     avatarUrl?: string;
   } | null;
-  releasedClues: { id: string; title: string; content: string; clueType: string }[];
+  releasedClues: ClueDeckItem[];
 }
 
 type Tab = "chat" | "private" | "script" | "clues" | "vote";
@@ -93,6 +115,26 @@ type FloatingNotice = {
   meta?: string;
 };
 
+type AgentStatusState = {
+  status: AgentRuntimeStatus;
+  reason?: string;
+};
+
+type PhaseAssessmentState = {
+  status: PhaseAssessmentStatus;
+  summary: string;
+  checklist: PhaseChecklistItem[];
+  focusTopic?: string;
+  consensus?: ConsensusState;
+};
+
+type PendingPlayerMessage = {
+  id: string;
+  content: string;
+  createdAt: number;
+  source: "text" | "asr";
+};
+
 export default function GameClient({ sessionId }: { sessionId: string }) {
   const router = useRouter();
   const [state, setState] = useState<GameState | null>(null);
@@ -100,6 +142,8 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
   const [streamingMsg, setStreamingMsg] = useState<{ id: string; senderId: string; name: string; type: string; content: string } | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [playerSending, setPlayerSending] = useState(false);
+  const [pendingPlayerMessage, setPendingPlayerMessage] = useState<PendingPlayerMessage | null>(null);
   const [tab, setTab] = useState<Tab>("chat");
   const [voteResult, setVoteResult] = useState<any>(null);
   const [detectiveSummary, setDetectiveSummary] = useState<string | null>(null);
@@ -108,18 +152,43 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [floatingNotice, setFloatingNotice] = useState<FloatingNotice | null>(null);
+  const [dmPanel, setDmPanel] = useState<DmHostPanelModel | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [speechActive, setSpeechActive] = useState(false);
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatusState>>({
+    dm: { status: "LISTENING", reason: "持续监听全场" },
+  });
+  const [phaseAssessment, setPhaseAssessment] = useState<PhaseAssessmentState | null>(null);
+  const [autoDiscussionEnabled, setAutoDiscussionEnabled] = useState(true);
+  const [scriptDrawerOpen, setScriptDrawerOpen] = useState(false);
+  const [scriptReaderSection, setScriptReaderSection] = useState<ScriptReaderSection>("overview");
+  const [pendingAutoAdvance, setPendingAutoAdvance] = useState(false);
   // 阶段超时：到点后展示的剩余宽限秒数（null = 未到点 / 不计时）
   const [graceLeft, setGraceLeft] = useState<number | null>(null);
   // 玩家本阶段选择"再停留一会儿"，则本阶段不再自动推进
   const [autoAdvancePaused, setAutoAdvancePaused] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nowRef = useRef<number>(0);
+  const autoDiscussionTimerRef = useRef<number | null>(null);
+  const lastAutoDiscussionAtRef = useRef<number>(0);
   const scriptTheme = useMemo(
     () => getScriptTheme(state?.scriptType, state?.scriptTitle),
     [state?.scriptType, state?.scriptTitle]
   );
   const recorderRef = useRef<PcmRecorder | null>(null);
-  const shownInitialNoticeRef = useRef(false);
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("soloplay.tts.enabled");
+    const enabled = stored !== "false";
+    setTtsEnabled(enabled);
+    setTtsPlaybackEnabled(enabled);
+  }, []);
+
+  useEffect(() => {
+    return subscribeTtsPlaybackState((playbackState) => {
+      setSpeechActive(playbackState.active);
+    });
+  }, []);
 
   const refreshState = useCallback(async () => {
     const res = await fetch(`/api/game/${sessionId}/state`);
@@ -130,21 +199,11 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
     const res = await fetch(`/api/game/${sessionId}/messages?channelKey=public`);
     if (res.ok) {
       const nextMessages = (await res.json()).messages as MessageDTO[];
-      setMessages(nextMessages.map(toChatDisplayMessage));
-      if (!shownInitialNoticeRef.current) {
-        const latestDm = [...nextMessages].reverse().find((m) => m.senderType === "DM");
-        if (latestDm) {
-          shownInitialNoticeRef.current = true;
-          setFloatingNotice({
-            id: latestDm.id,
-            kind: "dm",
-            eyebrow: latestDm.channelType === "DM_HINT" ? "DM 提示" : "DM 旁白",
-            title: inferDmTitle(latestDm.content),
-            content: cleanDmText(latestDm.content),
-            meta: `阶段 ${latestDm.phase}`,
-          });
-        }
+      const latestDm = [...nextMessages].reverse().find((m) => m.senderType === "DM");
+      if (latestDm) {
+        setDmPanel(buildDmPanel(latestDm.id, latestDm.content, latestDm.phase));
       }
+      setMessages(nextMessages.map(toChatDisplayMessage));
     }
   }, [sessionId]);
 
@@ -170,6 +229,66 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
       return state?.characters.find((c) => c.id === senderId)?.avatarUrl;
     },
     [state?.characters]
+  );
+
+  const appendDisplayMessage = useCallback((message: MessageDTO) => {
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === message.id)) return prev;
+      return [...prev, message];
+    });
+  }, []);
+
+  const setRuntimeStatus = useCallback(
+    (agentId: string, status: AgentRuntimeStatus, reason?: string) => {
+      setAgentStatuses((prev) => ({
+        ...prev,
+        [agentId]: { status, reason },
+      }));
+    },
+    []
+  );
+
+  const enqueueDisplayMessage = useCallback(
+    (message: MessageDTO, speechText?: string) => {
+      if (!state || message.senderType === "PLAYER") {
+        appendDisplayMessage(message);
+        return;
+      }
+
+      if (!ttsEnabled) {
+        appendDisplayMessage(message);
+        setRuntimeStatus(
+          message.senderType === "DM" ? "dm" : message.senderId,
+          message.senderType === "DM" ? "LISTENING" : "RESPONDED",
+          message.senderType === "DM" ? "继续监听公共讨论" : "本轮已回应"
+        );
+        return;
+      }
+
+      void queueTtsPlayback(
+        buildTtsProfile(message, state, speechText),
+        {
+          onStart: () => {
+            appendDisplayMessage(message);
+            setRuntimeStatus(
+              message.senderType === "DM" ? "dm" : message.senderId,
+              "SPEAKING",
+              "正在发言"
+            );
+          },
+          onFinish: () => {
+            setRuntimeStatus(
+              message.senderType === "DM" ? "dm" : message.senderId,
+              message.senderType === "DM" ? "LISTENING" : "RESPONDED",
+              message.senderType === "DM" ? "继续监听公共讨论" : "本轮已回应"
+            );
+          },
+          onError: () => appendDisplayMessage(message),
+          onSkip: () => appendDisplayMessage(message),
+        }
+      );
+    },
+    [appendDisplayMessage, setRuntimeStatus, state, ttsEnabled]
   );
 
   // 初始化：确保开始（或从暂停恢复）+ 拉状态与消息
@@ -208,7 +327,114 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     setGraceLeft(null);
     setAutoAdvancePaused(false);
+    setPendingAutoAdvance(false);
+    setPhaseAssessment(null);
+    setAgentStatuses((prev) => {
+      const next: Record<string, AgentStatusState> = {
+        dm: { status: "LISTENING", reason: "监听新阶段" },
+      };
+      for (const [agentId, value] of Object.entries(prev)) {
+        if (agentId !== "dm") next[agentId] = { ...value, status: "IDLE", reason: undefined };
+      }
+      return next;
+    });
   }, [state?.currentPhase]);
+
+  useEffect(() => {
+    if (!pendingAutoAdvance || busy || speechActive) return;
+    setPendingAutoAdvance(false);
+    void advancePhase(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoAdvance, busy, speechActive]);
+
+  useEffect(() => {
+    if (
+      !pendingPlayerMessage ||
+      playerSending ||
+      busy ||
+      speechActive ||
+      !state?.phase.permissions.publicChat ||
+      state.status === "COMPLETED"
+    ) {
+      return;
+    }
+
+    const nextMessage = pendingPlayerMessage;
+    setPendingPlayerMessage(null);
+    void submitPlayerMessage(nextMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pendingPlayerMessage,
+    playerSending,
+    busy,
+    speechActive,
+    state?.phase.permissions.publicChat,
+    state?.status,
+  ]);
+
+  useEffect(() => {
+    if (autoDiscussionTimerRef.current !== null) {
+      window.clearTimeout(autoDiscussionTimerRef.current);
+      autoDiscussionTimerRef.current = null;
+    }
+
+    if (
+      !state ||
+      !autoDiscussionEnabled ||
+      busy ||
+      speechActive ||
+      input.trim() ||
+      pendingPlayerMessage ||
+      recording ||
+      transcribing
+    ) {
+      return;
+    }
+    if (state.status === "COMPLETED") return;
+    if (
+      phaseAssessment?.status === "CAN_CLOSE" ||
+      phaseAssessment?.status === "CLOSING" ||
+      phaseAssessment?.status === "EVIDENCE_NEEDED" ||
+      phaseAssessment?.status === "CONSENSUS_CHECK"
+    ) {
+      return;
+    }
+
+    const aiCount = state.characters.filter((c) => c.assignedTo === "AI").length;
+    const sequential = /自我介绍|最终陈词|陈词/.test(state.phase.name);
+    const canAutoDiscuss = state.phase.permissions.publicChat && aiCount >= 2 && !sequential;
+    if (!canAutoDiscuss) return;
+
+    const elapsed = Date.now() - lastAutoDiscussionAtRef.current;
+    const delay = Math.max(3500, 11000 - elapsed);
+    autoDiscussionTimerRef.current = window.setTimeout(() => {
+      autoDiscussionTimerRef.current = null;
+      lastAutoDiscussionAtRef.current = Date.now();
+      void sendCommand("GROUP_DISCUSS", { auto: true });
+    }, delay);
+
+    return () => {
+      if (autoDiscussionTimerRef.current !== null) {
+        window.clearTimeout(autoDiscussionTimerRef.current);
+        autoDiscussionTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    state?.currentPhase,
+    state?.phase.name,
+    state?.phase.permissions.publicChat,
+    state?.status,
+    state?.characters,
+    autoDiscussionEnabled,
+    busy,
+    speechActive,
+    input,
+    pendingPlayerMessage,
+    recording,
+    transcribing,
+    phaseAssessment?.status,
+  ]);
 
   // 阶段超时自动推进：以服务端 phaseStartedAt 为权威基准本地计时。
   // 到点后不硬切，先进入宽限倒计时（可"再停留"），倒计时归零再自动 advancePhase。
@@ -217,8 +443,10 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
     const { phaseStartedAt, phaseTimeLimitSec } = state;
     const completed = state.status === "COMPLETED";
     const isLast = state.currentPhase >= state.totalPhases - 1;
+    const waitingForSequentialPlayer =
+      Boolean(state.playerCharacter) && /自我介绍|最终陈词|陈词/.test(state.phase.name);
     // 无 TIME 条件、已结束、最后阶段、玩家已选择停留 → 不计时
-    if (!phaseStartedAt || !phaseTimeLimitSec || completed || isLast || autoAdvancePaused) {
+    if (!phaseStartedAt || !phaseTimeLimitSec || completed || isLast || autoAdvancePaused || waitingForSequentialPlayer) {
       setGraceLeft(null);
       return;
     }
@@ -251,48 +479,66 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.phaseStartedAt, state?.phaseTimeLimitSec, state?.status, state?.currentPhase, state?.totalPhases, autoAdvancePaused, busy]);
+  }, [state?.phaseStartedAt, state?.phaseTimeLimitSec, state?.status, state?.currentPhase, state?.totalPhases, state?.phase.name, state?.playerCharacter, autoAdvancePaused, busy]);
 
   // 统一的 SSE 事件处理
   const handleEvent = useCallback((e: GameEvent) => {
     switch (e.type) {
-      case "MESSAGE_STREAM":
-        setStreamingMsg((prev) => {
-          if (prev && prev.id === e.messageId) {
-            return { ...prev, content: prev.content + e.chunk };
-          }
-          return { id: e.messageId, senderId: e.sender.id, name: e.sender.name, type: e.sender.type, content: e.chunk };
+      case "AGENT_STATUS_CHANGED":
+        setRuntimeStatus(e.agentId, e.status, e.reason);
+        break;
+      case "DM_PHASE_ASSESSMENT":
+        setPhaseAssessment({
+          status: e.status,
+          summary: e.summary,
+          checklist: e.checklist,
+          focusTopic: e.focusTopic,
+          consensus: e.consensus,
         });
+        setRuntimeStatus(
+          "dm",
+          e.status === "WAITING_PLAYER"
+            ? "WAITING_PLAYER"
+            : e.status === "CLOSING"
+            ? "THINKING"
+            : "LISTENING",
+          e.summary
+        );
+        break;
+      case "DISCUSSION_MODE_CHANGED":
+        setAutoDiscussionEnabled(e.enabled);
+        break;
+      case "MESSAGE_STREAM":
+        if (e.sender.type === "PLAYER") {
+          setStreamingMsg((prev) => {
+            if (prev && prev.id === e.messageId) {
+              return { ...prev, content: prev.content + e.chunk };
+            }
+            return { id: e.messageId, senderId: e.sender.id, name: e.sender.name, type: e.sender.type, content: e.chunk };
+          });
+        }
         break;
       case "MESSAGE_COMPLETE":
         setStreamingMsg(null);
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === e.messageId)) return prev;
-          return [
-            ...prev,
-            {
-              id: e.messageId,
-              channelType: "PUBLIC" as any,
-              channelKey: e.channelKey,
-              senderType: e.sender.type as any,
-              senderId: e.sender.id,
-              senderName: e.sender.name,
-              content: formatMessageContentForChat(e.sender.type, e.fullContent),
-              phase: e.phase,
-              createdAt: new Date().toISOString(),
-            },
-          ];
-        });
+        const completedMessage = {
+          id: e.messageId,
+          channelType: "PUBLIC" as any,
+          channelKey: e.channelKey,
+          senderType: e.sender.type as any,
+          senderId: e.sender.id,
+          senderName: e.sender.name,
+          content: formatMessageContentForChat(e.sender.type, e.fullContent),
+          phase: e.phase,
+          createdAt: new Date().toISOString(),
+          metadata: e.metadata ?? null,
+        } satisfies MessageDTO;
         if (e.sender.type === "DM") {
-          setFloatingNotice({
-            id: e.messageId,
-            kind: "dm",
-            eyebrow: "DM 旁白",
-            title: inferDmTitle(e.fullContent),
-            content: cleanDmText(e.fullContent),
-            meta: `阶段 ${e.phase}`,
-          });
+          setDmPanel(buildDmPanel(e.messageId, e.fullContent, e.phase));
         }
+        enqueueDisplayMessage(
+          completedMessage,
+          e.sender.type === "DM" ? stripMarkdownSyntax(cleanDmText(e.fullContent)) : e.fullContent
+        );
         break;
       case "CLUE_RELEASED":
         setState((s) =>
@@ -308,35 +554,51 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
           content: e.clueCard.content,
           meta: e.clueCard.clueType,
         });
+        if (state && ttsEnabled) {
+          void queueTtsPlayback(
+            buildTtsProfile(
+              {
+                senderType: "DM" as any,
+                senderId: "dm",
+                senderName: "DM",
+                content: `发布新线索：${e.clueCard.title}。${e.clueCard.content}`,
+              },
+              state
+            )
+          );
+        }
+        break;
+      case "CLUE_PLAYED":
+        setState((s) =>
+          s
+            ? {
+                ...s,
+                releasedClues: [
+                  ...s.releasedClues.filter((c) => c.id !== e.clueCard.id),
+                  e.clueCard,
+                ],
+              }
+            : s
+        );
         break;
       case "DM_HINT":
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `hint-${prev.length}-${e.content.length}`,
-            channelType: "DM_HINT" as any,
-            channelKey: "public",
-            senderType: "DM" as any,
-            senderId: "dm",
-            senderName: "DM",
-            content: summarizeDmForChat(e.content),
-            phase: state?.currentPhase ?? 0,
-            createdAt: new Date().toISOString(),
-          },
-        ]);
-        setFloatingNotice({
-          id: `hint-${Date.now()}`,
-          kind: "dm",
-          eyebrow: "DM 提示",
-          title: inferDmTitle(e.content),
-          content: cleanDmText(e.content),
-          meta: `阶段 ${state?.currentPhase ?? 0}`,
-        });
+        const hintMessage = {
+          id: `hint-${Date.now()}-${e.content.length}`,
+          channelType: "DM_HINT" as any,
+          channelKey: "public",
+          senderType: "DM" as any,
+          senderId: "dm",
+          senderName: "DM",
+          content: summarizeDmForChat(e.content),
+          phase: state?.currentPhase ?? 0,
+          createdAt: new Date().toISOString(),
+        } satisfies MessageDTO;
+        setDmPanel(buildDmPanel(hintMessage.id, e.content, state?.currentPhase ?? 0));
+        enqueueDisplayMessage(hintMessage, stripMarkdownSyntax(cleanDmText(e.content)));
         break;
       case "PHASE_CHANGED":
-        if (e.dmAnnouncement === "__SKIP__") {
-          // SKIP_PHASE：触发真正的 next-phase
-          void advancePhase();
+        if (e.dmAnnouncement === "__SKIP__" || e.dmAnnouncement === "__AUTO_NEXT__") {
+          setPendingAutoAdvance(true);
         }
         break;
       case "ERROR":
@@ -356,13 +618,40 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
         ]);
         break;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state?.currentPhase]);
+  }, [enqueueDisplayMessage, setRuntimeStatus, state, ttsEnabled]);
 
-  async function sendMessage() {
-    const content = input.trim();
-    if (!content || busy) return;
+  function createPendingPlayerMessage(content: string, source: PendingPlayerMessage["source"]): PendingPlayerMessage {
+    return {
+      id: `player-pending-${Date.now()}`,
+      content: content.trim(),
+      createdAt: Date.now(),
+      source,
+    };
+  }
+
+  function queueOrSubmitPlayerMessage(content: string, source: PendingPlayerMessage["source"] = "text") {
+    const trimmed = content.trim();
+    if (!trimmed || !canChat || completed || playerSending || pendingPlayerMessage) return;
+    pauseAutoDiscussionForPlayer();
+    void unlockTtsPlayback();
+    const message = createPendingPlayerMessage(trimmed, source);
+
+    if (busy || speechActive) {
+      setPendingPlayerMessage(message);
+      return;
+    }
+
+    void submitPlayerMessage(message);
+  }
+
+  async function submitPlayerMessage(message: PendingPlayerMessage) {
+    const content = message.content.trim();
+    if (!content || !canChat || completed || playerSending) return;
+    const wasBusy = busy;
+    pauseAutoDiscussionForPlayer();
+    void unlockTtsPlayback();
     setInput("");
+    setPlayerSending(true);
     setBusy(true);
     try {
       await postSse(
@@ -371,13 +660,22 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
         handleEvent
       );
     } finally {
-      setBusy(false);
+      setPlayerSending(false);
+      if (!wasBusy) setBusy(false);
       setStreamingMsg(null);
     }
   }
 
+  async function sendMessage() {
+    const content = input.trim();
+    if (!content || pendingPlayerMessage) return;
+    setInput("");
+    queueOrSubmitPlayerMessage(content, "text");
+  }
+
   async function startVoiceInput() {
     if (recording || transcribing || !canChat || completed) return;
+    pauseAutoDiscussionForPlayer();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -456,7 +754,9 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
       if (!res.ok) throw new Error(data.error ?? "语音识别失败");
       const text = String(data.text ?? "").trim();
       if (text) {
-        setInput((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text));
+        const currentDraft = input.trim();
+        setInput("");
+        queueOrSubmitPlayerMessage(currentDraft ? `${currentDraft}\n${text}` : text, "asr");
       }
     } catch (err) {
       setMessages((prev) => [
@@ -479,8 +779,9 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
     }
   }
 
-  async function advancePhase() {
-    if (busy) return;
+  async function advancePhase(force = false) {
+    if (busy && !force) return;
+    void unlockTtsPlayback();
     setBusy(true);
     try {
       await postSse(`/api/game/${sessionId}/next-phase`, {}, handleEvent);
@@ -493,6 +794,7 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
 
   async function sendCommand(command: string, params?: any) {
     if (busy) return;
+    void unlockTtsPlayback();
     setBusy(true);
     try {
       await postSse(`/api/game/${sessionId}/player-command`, { command, params }, handleEvent);
@@ -503,8 +805,100 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
     }
   }
 
+  async function requestConsensus() {
+    await sendCommand("REQUEST_CONSENSUS");
+  }
+
+  async function submitPhaseConclusion() {
+    const conclusion = input.trim();
+    if (!conclusion) {
+      await sendCommand("REQUEST_CONSENSUS");
+      return;
+    }
+    setInput("");
+    await sendCommand("SUBMIT_PHASE_CONCLUSION", { conclusion });
+  }
+
+  async function markNoConsensus() {
+    const reason = input.trim() || "目前大家对本阶段关键判断还没有形成一致意见。";
+    setInput("");
+    await sendCommand("MARK_NO_CONSENSUS", { reason, disputedPoints: [reason] });
+  }
+
+  async function requestDmClose() {
+    await sendCommand("REQUEST_DM_CLOSE");
+  }
+
+  async function playClueToPublic(clue: ClueDeckItem) {
+    if (!canChat || completed || busy || speechActive) return;
+    void unlockTtsPlayback();
+    setBusy(true);
+    try {
+      await postSse(
+        `/api/game/${sessionId}/clue-action`,
+        {
+          clueId: clue.id,
+          actionType: "PLAYER_SHOW_PUBLIC",
+        },
+        handleEvent
+      );
+      await refreshState();
+    } finally {
+      setBusy(false);
+      setStreamingMsg(null);
+    }
+  }
+
+  async function questionClueTarget(clue: ClueDeckItem, targetCharacterId: string, question: string) {
+    if (!canChat || completed || busy || speechActive) return;
+    void unlockTtsPlayback();
+    setBusy(true);
+    try {
+      await postSse(
+        `/api/game/${sessionId}/clue-action`,
+        {
+          clueId: clue.id,
+          actionType: "PLAYER_QUESTION_CHARACTER",
+          targetCharacterId,
+          question,
+        },
+        handleEvent
+      );
+      await refreshState();
+    } finally {
+      setBusy(false);
+      setStreamingMsg(null);
+    }
+  }
+
+  function requestRecap() {
+    void sendCommand("RECAP");
+  }
+
+  function focusFirstCharacter() {
+    const target = state?.characters.find((c) => c.assignedTo === "AI");
+    if (target) void sendCommand("FOCUS_CHARACTER", { characterName: target.name });
+  }
+
+  function openScriptReader(section: ScriptReaderSection = "overview") {
+    setScriptReaderSection(section);
+    setScriptDrawerOpen(true);
+  }
+
+  function handleComposerChange(value: string) {
+    setInput(value);
+  }
+
+  function pauseAutoDiscussionForPlayer() {
+    if (autoDiscussionTimerRef.current !== null) {
+      window.clearTimeout(autoDiscussionTimerRef.current);
+      autoDiscussionTimerRef.current = null;
+    }
+  }
+
   async function submitVote(targetId: string) {
     if (busy) return;
+    void unlockTtsPlayback();
     setBusy(true);
     try {
       const res = await fetch(`/api/game/${sessionId}/vote`, {
@@ -534,6 +928,26 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
   const isLastPhase = state.currentPhase >= state.totalPhases - 1;
   const completed = state.status === "COMPLETED";
   const aiCount = state.characters.filter((c) => c.assignedTo === "AI").length;
+  const sequentialDisplayPhase = /自我介绍|最终陈词|陈词/.test(state.phase.name);
+  const canGroupDiscuss = canChat && !completed && aiCount >= 2 && !sequentialDisplayPhase;
+  const isReadingPhase = state.currentPhase === 0 || state.phase.name.includes("阅本");
+  const composerLocked = !canChat || completed;
+  const releasedClues = state.releasedClues as ClueDeckItem[];
+  const phaseActionDisabled =
+    busy || speechActive || playerSending || Boolean(pendingPlayerMessage) || recording || transcribing;
+  const questionTargets = state.characters
+    .filter((c) => c.assignedTo === "AI")
+    .map((c) => ({ id: c.id, name: c.name, occupation: c.occupation }));
+  const dmRuntime = agentStatuses.dm ?? { status: "LISTENING" as AgentRuntimeStatus, reason: "持续监听全场" };
+  const agentStatusItems: AgentStatusItem[] = state.characters.map((character) => ({
+    id: character.id,
+    name: character.name,
+    occupation: character.occupation,
+    avatarUrl: character.avatarUrl,
+    assignedTo: character.assignedTo,
+    status: agentStatuses[character.id]?.status,
+    reason: agentStatuses[character.id]?.reason,
+  }));
 
   return (
     <div className="case-page flex h-screen flex-col bg-background" style={scriptThemeStyle(scriptTheme)}>
@@ -552,6 +966,22 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
         </div>
         <div className="flex min-w-0 items-center gap-2 overflow-x-auto sm:justify-end">
           {state.usingMockData && <Badge variant="destructive">Mock 模式</Badge>}
+          <Button
+            type="button"
+            variant={ttsEnabled ? "secondary" : "outline"}
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            title={ttsEnabled ? "自动朗读已开启" : "自动朗读已关闭"}
+            onClick={async () => {
+              const next = !ttsEnabled;
+              setTtsEnabled(next);
+              setTtsPlaybackEnabled(next);
+              window.localStorage.setItem("soloplay.tts.enabled", String(next));
+              if (next) await unlockTtsPlayback();
+            }}
+          >
+            {ttsEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+          </Button>
           <Badge className="shrink-0">阶段 {state.currentPhase}/{state.totalPhases - 1} · {state.phase.name}</Badge>
           {completed && (
             <Button className="shrink-0" size="sm" onClick={() => router.push(`/replay/${sessionId}`)}>查看复盘</Button>
@@ -577,7 +1007,7 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
             >
               再停留一会儿
             </Button>
-            <Button size="sm" disabled={busy || isLastPhase} onClick={advancePhase}>
+            <Button size="sm" disabled={busy || isLastPhase || sequentialDisplayPhase} onClick={() => advancePhase()}>
               立即进入下一阶段
             </Button>
           </div>
@@ -607,36 +1037,48 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
             <div className="text-xs font-semibold text-primary">{scriptTheme.name}</div>
             <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{scriptTheme.motif}</div>
           </div>
-          <div>
-            <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <Users className="h-3.5 w-3.5" /> 在场角色
-            </div>
+          {!completed && (
+            <StageControlPanel
+              busy={busy || speechActive}
+              canRequestHint={Boolean(pace?.canRequestHint)}
+              canRequestRecap={Boolean(pace?.canRequestRecap)}
+              canSkipPhase={Boolean(pace?.canSkipPhase) && !sequentialDisplayPhase}
+              canAdvance={!isLastPhase && !sequentialDisplayPhase}
+              onCommand={(command) => sendCommand(command)}
+              onAdvance={() => advancePhase()}
+              onPause={() => {
+                void (async () => {
+                  await sendCommand("PAUSE");
+                  router.push("/history");
+                })();
+              }}
+            />
+          )}
+          <AgentStatusRail
+            dmStatus={dmRuntime.status}
+            dmReason={dmRuntime.reason}
+            agents={agentStatusItems}
+            checklist={phaseAssessment?.checklist ?? []}
+            focusTopic={phaseAssessment?.focusTopic}
+          />
+          {pace?.canFocusCharacter && !completed && (
             <div className="space-y-1.5">
-              {state.characters.map((c) => (
-                <div key={c.id} className="rounded-md border border-border bg-background/35 px-2 py-1.5 text-xs">
-                  <div className="flex items-center gap-2">
-                    <SmallAvatar src={c.avatarUrl} name={c.name} />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="truncate font-medium">{c.name}</span>
-                        {c.assignedTo === "PLAYER" && <Badge variant="success">你</Badge>}
-                      </div>
-                      <div className="truncate text-[11px] text-muted-foreground">{c.occupation}</div>
-                    </div>
-                  </div>
-                  {c.assignedTo === "AI" && pace?.canFocusCharacter && !completed && (
-                    <button
-                      className="mt-1 text-[11px] text-primary hover:underline disabled:opacity-50"
-                      disabled={busy}
-                      onClick={() => sendCommand("FOCUS_CHARACTER", { characterName: c.name })}
-                    >
-                      想多了解 ta →
-                    </button>
-                  )}
-                </div>
+              <div className="text-xs font-medium text-muted-foreground">快速质询</div>
+              {state.characters.filter((c) => c.assignedTo === "AI").slice(0, 3).map((c) => (
+                <Button
+                  key={c.id}
+                  variant="outline"
+                  size="sm"
+                  className="w-full justify-start"
+                  disabled={busy || speechActive}
+                  onClick={() => sendCommand("FOCUS_CHARACTER", { characterName: c.name })}
+                >
+                  <SmallAvatar src={c.avatarUrl} name={c.name} />
+                  <span className="truncate">{c.name}</span>
+                </Button>
               ))}
             </div>
-          </div>
+          )}
         </aside>
 
         {/* 中间：主区域（含 tab 切换） */}
@@ -666,8 +1108,20 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
                   </div>
                 )}
                 {messages.map((m) => (
-                  <MessageBubble key={m.id} msg={m} avatarUrl={avatarFor(m.senderId, m.senderType)} theme={scriptTheme} />
+                  <MessageBubble
+                    key={m.id}
+                    msg={m}
+                    avatarUrl={avatarFor(m.senderId, m.senderType)}
+                    theme={scriptTheme}
+                    ttsProfile={buildTtsProfile(m, state)}
+                  />
                 ))}
+                {isReadingPhase && !completed && (
+                  <ReadingStartCard
+                    disabled={busy || speechActive}
+                    onStart={() => advancePhase()}
+                  />
+                )}
                 {streamingMsg && (
                   <MessageBubble
                     msg={{
@@ -685,26 +1139,46 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
 
               {/* 输入区 */}
               <div className="case-panel border-x-0 border-b-0 p-3">
-                {canChat && !completed && aiCount >= 2 && (
+                {canGroupDiscuss && (
                   <div className="mb-2 flex items-center gap-2">
+                    <Button
+                      variant={autoDiscussionEnabled ? "secondary" : "outline"}
+                      size="sm"
+                      onClick={() => setAutoDiscussionEnabled((next) => !next)}
+                      title="开启后，空闲时 Agent 会持续公共讨论，玩家可随时插话"
+                    >
+                      <Users className="h-3.5 w-3.5" /> 自动讨论：{autoDiscussionEnabled ? "开" : "关"}
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={busy}
+                      disabled={busy || speechActive}
                       onClick={() => sendCommand("GROUP_DISCUSS")}
-                      title="让在场角色彼此你来我往地讨论一轮，你可随时插话"
+                      title="立即让在场角色接着讨论一轮"
                     >
-                      <Users className="h-3.5 w-3.5" /> 让大家讨论一轮
+                      <MessageSquare className="h-3.5 w-3.5" /> 立即续聊
                     </Button>
                     <span className="text-[11px] text-muted-foreground">
-                      不想一直提问？让角色们自己聊起来，你随时可以插话。
+                      空闲时会自动续聊；你开始输入时会暂缓。
                     </span>
                   </div>
+                )}
+                {canChat && !completed && !sequentialDisplayPhase && (
+                  <PhaseActionPanel
+                    disabled={phaseActionDisabled}
+                    status={phaseAssessment?.status}
+                    consensus={phaseAssessment?.consensus}
+                    hasDraft={Boolean(input.trim())}
+                    onRequestConsensus={requestConsensus}
+                    onSubmitConclusion={submitPhaseConclusion}
+                    onMarkNoConsensus={markNoConsensus}
+                    onRequestDmClose={requestDmClose}
+                  />
                 )}
                 <div className="flex items-end gap-2">
                   <Textarea
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => handleComposerChange(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
@@ -715,10 +1189,14 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
                       completed
                         ? "游戏已结束"
                         : canChat
-                        ? "在公共频道发言…（Enter 发送，Shift+Enter 换行）"
+                        ? pendingPlayerMessage
+                          ? "上一条发言正在排队等待…"
+                          : speechActive || busy
+                          ? "可以先发言，系统会等上一位说完再发送…"
+                          : "在公共频道发言…（Enter 发送，Shift+Enter 换行）"
                         : `当前阶段「${state.phase.name}」尚未开放发言`
                     }
-                    disabled={!canChat || busy || completed}
+                    disabled={composerLocked}
                     className="max-h-32 resize-none"
                     rows={2}
                   />
@@ -726,10 +1204,10 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
                     type="button"
                     variant={recording ? "destructive" : "outline"}
                     onClick={recording ? stopVoiceInput : startVoiceInput}
-                    disabled={!canChat || busy || completed || transcribing}
+                    disabled={composerLocked || transcribing || Boolean(pendingPlayerMessage) || playerSending}
                     size="icon"
                     className="h-[60px] w-12"
-                    title={recording ? "停止录音并识别" : "语音输入"}
+                    title={recording ? "停止录音并发送" : "语音输入"}
                   >
                     {transcribing ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -739,16 +1217,45 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
                       <Mic className="h-4 w-4" />
                     )}
                   </Button>
-                  <Button onClick={sendMessage} disabled={!canChat || busy || completed || !input.trim()} size="icon" className="h-[60px] w-12">
-                    {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                  <Button onClick={sendMessage} disabled={composerLocked || playerSending || Boolean(pendingPlayerMessage) || !input.trim()} size="icon" className="h-[60px] w-12">
+                    {playerSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   </Button>
                 </div>
                 {(recording || transcribing) && (
                   <p className="mt-2 text-[11px] text-muted-foreground">
-                    {recording ? "正在录音，点击停止后会用 Step ASR 转成文字。" : "正在调用 Step ASR 识别语音…"}
+                    {recording ? "正在录音，点击停止后会用 Step ASR 转成文字并发送。" : "正在调用 Step ASR 识别语音…"}
                   </p>
                 )}
+                {pendingPlayerMessage && (
+                  <div className="mt-2 flex items-center justify-between gap-3 rounded-md border border-primary/25 bg-primary/10 px-3 py-2 text-xs text-foreground">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+                      <span className="shrink-0 font-medium">等待上一位发言结束</span>
+                      <span className="min-w-0 truncate text-muted-foreground">{pendingPlayerMessage.content}</span>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 shrink-0 px-2 text-xs"
+                      onClick={() => setPendingPlayerMessage(null)}
+                    >
+                      取消
+                    </Button>
+                  </div>
+                )}
               </div>
+              <PlayerHand
+                playerCharacter={state.playerCharacter}
+                publicStory={state.publicStory}
+                clues={releasedClues}
+                busy={busy || speechActive}
+                canChat={canChat && !completed}
+                onOpenScript={openScriptReader}
+                onPlayClue={playClueToPublic}
+                onRecap={requestRecap}
+                onFocusFirstCharacter={focusFirstCharacter}
+              />
             </>
           )}
 
@@ -759,6 +1266,7 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
                 characters={state.characters}
                 privateEnabled={state.phase.permissions.privateChat && !completed}
                 theme={scriptTheme}
+                ttsEnabled={ttsEnabled}
               />
             </div>
           )}
@@ -905,9 +1413,32 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
                   {state.releasedClues.map((c) => (
-                    <Card key={c.id} className="border-primary/20">
-                      <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm">🔍 {c.title}<Badge variant="secondary">{c.clueType}</Badge></CardTitle></CardHeader>
-                      <CardContent><p className="text-sm leading-relaxed text-muted-foreground">{c.content}</p></CardContent>
+                    <Card key={c.id} className="overflow-hidden border-primary/20">
+                      {c.imageUrl && (
+                        <div
+                          className="h-36 border-b border-primary/20 bg-secondary bg-cover bg-center"
+                          style={{ backgroundImage: `url("${c.imageUrl}")` }}
+                        />
+                      )}
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center gap-2 text-sm">
+                          <ScrollText className="h-4 w-4 text-primary" />
+                          {c.title}
+                          <Badge variant="secondary">{c.clueType}</Badge>
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <p className="text-sm leading-relaxed text-muted-foreground">{c.content}</p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!canChat || completed || busy || speechActive}
+                          onClick={() => playClueToPublic(c)}
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                          打出到公屏
+                        </Button>
+                      </CardContent>
                     </Card>
                   ))}
                 </div>
@@ -936,40 +1467,120 @@ export default function GameClient({ sessionId }: { sessionId: string }) {
           )}
         </main>
 
-        {/* 右侧：DM 节奏控制 */}
+        {/* 右侧：DM 主持台 */}
         {!completed && (
-          <aside className="case-panel hidden w-52 shrink-0 flex-col gap-2 overflow-y-auto border-y-0 border-r-0 p-3 xl:flex">
-            <div className="text-xs font-medium text-muted-foreground">节奏控制</div>
-            <Button variant="outline" size="sm" className="justify-start" disabled={busy || !pace?.canRequestHint} onClick={() => sendCommand("HINT")}>
-              <Lightbulb className="h-3.5 w-3.5" /> 我需要提示
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start" disabled={busy || !pace?.canRequestRecap} onClick={() => sendCommand("RECAP")}>
-              <RotateCcw className="h-3.5 w-3.5" /> 回顾剧情
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start" disabled={busy} onClick={() => sendCommand("LOWER_DIFFICULTY")}>
-              <ArrowRight className="h-3.5 w-3.5" /> 觉得太难了
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start" disabled={busy || !pace?.canSkipPhase} onClick={() => sendCommand("SKIP_PHASE")}>
-              <SkipForward className="h-3.5 w-3.5" /> 跳过本阶段
-            </Button>
-            <Button variant="outline" size="sm" className="justify-start" disabled={busy} onClick={async () => { await sendCommand("PAUSE"); router.push("/history"); }}>
-              <Pause className="h-3.5 w-3.5" /> 暂停并退出
-            </Button>
-
-            <div className="mt-3 border-t border-border pt-3">
-              <Button className="w-full" disabled={busy || isLastPhase} onClick={advancePhase}>
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-                进入下一阶段
-              </Button>
-              <p className="mt-2 text-[11px] leading-tight text-muted-foreground">
-                已用提示 {state.hintsUsed} 次。DM 会按阶段推进游戏。
-              </p>
-            </div>
+          <aside className="case-panel hidden w-72 shrink-0 overflow-y-auto border-y-0 border-r-0 p-3 xl:block">
+            <DmHostPanel
+              panel={dmPanel}
+              phaseName={state.phase.name}
+              phaseDescription={state.phase.description}
+              clues={releasedClues}
+              hintsUsed={state.hintsUsed}
+              themeLabel={scriptTheme.label}
+              phaseStatus={phaseAssessment?.status}
+              focusTopic={phaseAssessment?.focusTopic}
+              consensus={phaseAssessment?.consensus}
+              checklist={phaseAssessment?.checklist ?? []}
+              questionTargets={questionTargets}
+              onPlayClue={playClueToPublic}
+              onQuestionClue={questionClueTarget}
+            />
           </aside>
         )}
       </div>
+      <ScriptDrawer
+        open={scriptDrawerOpen}
+        onClose={() => setScriptDrawerOpen(false)}
+        activeSection={scriptReaderSection}
+        onSectionChange={setScriptReaderSection}
+        scriptTitle={state.scriptTitle}
+        publicStory={state.publicStory}
+        playerCharacter={state.playerCharacter}
+      />
     </div>
   );
+}
+
+function ReadingStartCard({ disabled, onStart }: { disabled: boolean; onStart: () => void }) {
+  return (
+    <div className="mx-auto my-5 max-w-md rounded-lg border border-primary/30 bg-primary/5 p-4 text-center shadow-sm">
+      <div className="text-sm font-semibold text-foreground">阅本完成</div>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+        DM 已准备好主持下一阶段。
+      </p>
+      <Button className="mt-3 min-w-36" size="lg" disabled={disabled} onClick={onStart}>
+        <Play className="h-4 w-4" />
+        游戏开始
+      </Button>
+    </div>
+  );
+}
+
+function PhaseActionPanel({
+  disabled,
+  status,
+  consensus,
+  hasDraft,
+  onRequestConsensus,
+  onSubmitConclusion,
+  onMarkNoConsensus,
+  onRequestDmClose,
+}: {
+  disabled: boolean;
+  status?: PhaseAssessmentStatus;
+  consensus?: ConsensusState;
+  hasDraft: boolean;
+  onRequestConsensus: () => void;
+  onSubmitConclusion: () => void;
+  onMarkNoConsensus: () => void;
+  onRequestDmClose: () => void;
+}) {
+  return (
+    <div className="mb-2 rounded-md border border-border bg-background/45 px-2.5 py-2">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <div className="min-w-0 truncate text-[11px] text-muted-foreground">
+          阶段收敛
+          {consensus?.agreedPoints?.[0] ? ` · ${consensus.agreedPoints[0]}` : ""}
+        </div>
+        <Badge variant={status === "CAN_CLOSE" ? "success" : status === "EVIDENCE_NEEDED" || status === "CONSENSUS_CHECK" ? "secondary" : "outline"}>
+          {formatPhaseActionStatus(status)}
+        </Badge>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={disabled} onClick={onRequestConsensus}>
+          <RefreshCw className="h-3.5 w-3.5" /> 共识检查
+        </Button>
+        <Button variant="secondary" size="sm" className="h-7 px-2 text-xs" disabled={disabled} onClick={onSubmitConclusion}>
+          <Send className="h-3.5 w-3.5" /> {hasDraft ? "提交结论" : "先查共识"}
+        </Button>
+        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={disabled} onClick={onMarkNoConsensus}>
+          <MessageSquare className="h-3.5 w-3.5" /> 无共识
+        </Button>
+        <Button variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={disabled} onClick={onRequestDmClose}>
+          <Play className="h-3.5 w-3.5" /> 收束
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function formatPhaseActionStatus(status?: PhaseAssessmentStatus) {
+  switch (status) {
+    case "EVIDENCE_NEEDED":
+      return "待举证";
+    case "CONSENSUS_CHECK":
+      return "待结论";
+    case "NO_CONSENSUS":
+      return "有分歧";
+    case "CAN_CLOSE":
+      return "可收束";
+    case "CLOSING":
+      return "收束中";
+    case "WAITING_PLAYER":
+      return "等你";
+    default:
+      return "监听中";
+  }
 }
 
 function TabBtn({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: React.ReactNode; children: React.ReactNode }) {
@@ -1019,8 +1630,46 @@ function toChatDisplayMessage(message: MessageDTO): MessageDTO {
   };
 }
 
+function buildTtsProfile(
+  message: Pick<MessageDTO, "senderType" | "senderId" | "senderName" | "content">,
+  state: GameState,
+  textOverride?: string
+): TtsPlaybackProfile {
+  if (message.senderType === "DM") {
+    return {
+      text: textOverride ?? message.content,
+      senderType: message.senderType,
+      senderId: message.senderId,
+      senderName: "DM",
+    };
+  }
+  const character =
+    state.characters.find((c) => c.id === message.senderId) ??
+    (message.senderType === "PLAYER" ? state.playerCharacter : null);
+  return {
+    text: textOverride ?? message.content,
+    senderType: message.senderType,
+    senderId: message.senderId,
+    senderName: message.senderName,
+    gender: character?.gender,
+    occupation: character?.occupation,
+    publicProfile: character?.publicProfile,
+  };
+}
+
 function formatMessageContentForChat(senderType: string, content: string) {
   return senderType === "DM" ? summarizeDmForChat(content) : content;
+}
+
+function buildDmPanel(id: string, content: string, phase: number): DmHostPanelModel {
+  const cleaned = cleanDmText(content);
+  return {
+    id,
+    title: inferDmTitle(content),
+    summary: summarizeDmForChat(content),
+    content: cleaned,
+    meta: `阶段 ${phase}`,
+  };
 }
 
 function summarizeDmForChat(text: string) {

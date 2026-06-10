@@ -12,6 +12,18 @@ The app is local-first:
 
 Primary product docs are `README.md`, `PRD.md`, and `TECH_SPEC.md`. Prefer `README.md` as the current implementation reference when docs disagree.
 
+## Document-First Development Rule
+
+For every functional iteration or technical architecture change, follow this sequence before touching implementation code:
+
+1. Read `PRD.md` and `TECH_SPEC.md`.
+2. Update both documents once to align them with the current codebase and implementation reality.
+3. Update both documents a second time with the new product requirements and technical architecture for the requested iteration.
+4. Ask the user to review and confirm the updated PRD/spec.
+5. Only after confirmation, implement code changes according to the confirmed documents and the existing code architecture.
+
+Do not skip this process for UI, agent behavior, model-provider, data-model, or gameplay-flow changes. The user explicitly wants PRD/spec updates before development.
+
 ## Common Commands
 
 - `npm run dev` - start Next.js locally, usually at `http://localhost:3000`.

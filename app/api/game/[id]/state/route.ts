@@ -11,6 +11,7 @@ import { HAS_API_KEY } from "@/lib/anthropic";
 import { PlayerMode } from "@/lib/constants";
 import { getCharacterAvatarUrl } from "@/lib/avatars";
 import { parseJson } from "@/lib/utils";
+import { clueCardToDto } from "@/lib/game/clue-director";
 
 export const dynamic = "force-dynamic";
 
@@ -29,12 +30,8 @@ export async function GET(
   const releases = await prisma.clueRelease.findMany({
     where: { sessionId: params.id },
     orderBy: { releasedAt: "asc" },
+    include: { clueCard: true },
   });
-  const clueIds = releases.map((r) => r.clueCardId);
-  const clues =
-    clueIds.length > 0
-      ? await prisma.clueCard.findMany({ where: { id: { in: clueIds } } })
-      : [];
 
   return NextResponse.json({
     sessionId: loaded.session.id,
@@ -87,11 +84,6 @@ export async function GET(
             avatarUrl: getCharacterAvatarUrl(`${loaded.script.title}-${playerSc.character.name}`),
           }
         : null,
-    releasedClues: clues.map((c) => ({
-      id: c.id,
-      title: c.title,
-      content: c.content,
-      clueType: c.clueType,
-    })),
+    releasedClues: releases.map((release) => clueCardToDto(release.clueCard)),
   });
 }

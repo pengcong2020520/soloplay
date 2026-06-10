@@ -82,6 +82,7 @@ model Script {
 
   // 生成参数
   generationParams  String? // JSON
+  visualStyle       String? // JSON: 该剧本线索图视觉圣经
 
   characters        Character[]
   clueCards         ClueCard[]
@@ -126,6 +127,13 @@ model ClueCard {
   releasePhase     Int
   triggerCondition String?
   isSecret         Boolean @default(false)
+  imageUrl         String?
+  mediaType        String  @default("image") // image / video / none
+  videoUrl         String?
+  visualBatchId    String?
+  visualPrompt     String?
+  sequenceIndex    Int?
+  sharePolicy      String  @default("PUBLIC_AFTER_RELEASE")
 
   clueReleases     ClueRelease[]
 }
@@ -241,4 +249,6 @@ model ClueRelease {
 
   releasedAt DateTime    @default(now())
   phase      Int
+  releasedBy String      @default("DM")
+  releaseReason String?
 }

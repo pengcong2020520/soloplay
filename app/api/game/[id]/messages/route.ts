@@ -46,6 +46,19 @@ export async function GET(
       content: m.content,
       phase: m.phase,
       createdAt: m.createdAt.toISOString(),
+      metadata: parseMetadata(m.metadata),
     })),
   });
+}
+
+function parseMetadata(value: string | null) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : null;
+  } catch {
+    return null;
+  }
 }

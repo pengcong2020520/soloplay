@@ -5,8 +5,20 @@ import { sseResponse } from "@/lib/sse";
 import {
   saveMessage,
   streamCharacterTurn,
-  pickRespondersForPublic,
+  streamDMTurn,
+  runPublicGroupDiscussion,
 } from "@/lib/game/turn";
+import {
+  analyzeDialogueTargets,
+  buildResponderDirective,
+  planPublicResponders,
+} from "@/lib/game/conversation-director";
+import {
+  getSequentialCompletionDirective,
+  isFreeDiscussionPhase,
+  shouldAutoAdvanceAfterPlayerSpeech,
+} from "@/lib/game/phase-flow";
+import { emitPhaseAssessment, maybeAutoAdvancePhase } from "@/lib/game/phase-director";
 import {
   ChannelType,
   SenderType,
@@ -65,6 +77,13 @@ export async function POST(
 
   return sseResponse(async (send) => {
     // 1. 落库玩家消息
+    send({
+      type: "AGENT_STATUS_CHANGED",
+      agentId: "dm",
+      agentName: "DM",
+      status: "LISTENING",
+      reason: "正在监听玩家公共发言",
+    });
     const playerMsg = await saveMessage({
       sessionId: loaded.session.id,
       channelType,
@@ -74,6 +93,9 @@ export async function POST(
       senderName: playerName,
       content,
       phase: loaded.currentPhase,
+      metadata: {
+        dialogue: analyzeDialogueTargets(loaded, content, { speakerId: "player", includePlayer: false }),
+      },
     });
     send({
       type: "MESSAGE_COMPLETE",
@@ -82,6 +104,7 @@ export async function POST(
       sender: { type: "PLAYER", id: "player", name: playerName },
       phase: loaded.currentPhase,
       channelKey,
+      metadata: playerMsg.metadata ? safeObj(playerMsg.metadata) : undefined,
     });
 
     // 2. 决定哪些角色回应
@@ -108,14 +131,41 @@ export async function POST(
       return;
     }
 
+    if (playerSc && shouldAutoAdvanceAfterPlayerSpeech(phase)) {
+      await streamDMTurn(
+        loaded,
+        getSequentialCompletionDirective(phase, playerName),
+        "GUIDE",
+        send,
+        { channelType: ChannelType.DM_BROADCAST }
+      );
+      if (loaded.currentPhase < loaded.phases.length - 1) {
+        send({
+          type: "PHASE_CHANGED",
+          newPhase: loaded.currentPhase + 1,
+          phaseName: "",
+          dmAnnouncement: "__AUTO_NEXT__",
+        });
+      }
+      return;
+    }
+
+    await emitPhaseAssessment(loaded, send);
+
     // 公共频道：挑选若干 AI 角色依次回应；非首位回应者会接着前面的话茬，让讨论热起来
-    const responders = pickRespondersForPublic(loaded, content);
+    const plan = planPublicResponders(loaded, content, { fallbackSalt: "player-public" });
+    const responders = plan.responders;
+    let recentContents = [content];
     for (let i = 0; i < responders.length; i++) {
-      const directive =
-        i === 0
-          ? `${playerName}刚才在公共场合说："${content}"。请你以角色身份回应（2~4句）：可以正面回答、反问、表达怀疑或为自己辩白。`
-          : `${playerName}刚才说："${content}"，前面的同伴也已经接话。请你顺着当前讨论继续：对他们的说法表示赞同、反驳或追问，让对话自然热起来（2~4句），不要重复别人已经说过的内容。`;
-      await streamCharacterTurn(
+      const directive = buildResponderDirective({
+        playerName,
+        playerContent: content,
+        responderName: responders[i].name,
+        signal: plan.signal,
+        isFirst: i === 0,
+        recentContents,
+      });
+      const reply = await streamCharacterTurn(
         loaded,
         responders[i],
         PUBLIC_CHANNEL_KEY,
@@ -123,6 +173,23 @@ export async function POST(
         send,
         directive
       );
+      recentContents = [reply, ...recentContents].slice(0, 5);
     }
+
+    if (isFreeDiscussionPhase(phase) && responders.length > 0) {
+      await runPublicGroupDiscussion(loaded, send, { turns: 1, topic: content.slice(0, 80) });
+    }
+    await maybeAutoAdvancePhase(loaded, send, { source: "PLAYER_MESSAGE" });
   });
+}
+
+function safeObj(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, any>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }

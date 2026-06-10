@@ -23,6 +23,9 @@ function fail(msg) {
 
 const browser = await chromium.launch({ headless: HEADLESS });
 const ctx = await browser.newContext();
+await ctx.addInitScript(() => {
+  window.localStorage.setItem("soloplay.tts.enabled", "false");
+});
 const page = await ctx.newPage();
 
 // 捕获错误
@@ -101,8 +104,48 @@ try {
     return false;
   }
 
-  // ── 5. 推进到自我介绍阶段，等待真实 AI 角色发言 ──
-  step(5, "点「进入下一阶段」，等待 AI 角色自我介绍（真实 LLM 流式）");
+  async function currentHeaderText() {
+    return page.locator("header").innerText({ timeout: 5000 }).catch(() => "");
+  }
+
+  async function waitForHeader(pattern, timeoutMs = 120000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const header = await currentHeaderText();
+      if (pattern.test(header)) return header;
+      await page.waitForTimeout(1000);
+    }
+    fail(`等待当前阶段超时：${pattern}`);
+  }
+
+  let finalSubmitted = false;
+  async function submitIfFinalStatement() {
+    const header = await currentHeaderText();
+    if (!/阶段 \d+\/\d+ · .*最终陈词/.test(header)) return false;
+    if (finalSubmitted) {
+      await waitForHeader(/阶段 \d+\/\d+ · .*投票/, 180000);
+      return true;
+    }
+    finalSubmitted = true;
+    const finalTextarea = page.locator("textarea").first();
+    let enabled = false;
+    for (let i = 0; i < 120; i++) {
+      if ((await finalTextarea.count()) > 0 && (await finalTextarea.isEnabled().catch(() => false))) {
+        enabled = true;
+        break;
+      }
+      await page.waitForTimeout(1000);
+    }
+    if (!enabled) fail("最终陈词阶段输入框未开放，玩家无法最后陈词");
+    await finalTextarea.fill("我的最终判断是：不要被表面的情绪带偏，关键仍然是时间线、动机和谁最需要隐瞒真相。我的陈词到这里。");
+    await page.keyboard.press("Enter");
+    log("  ✓ 玩家已完成最终陈词，等待 DM 自动进入投票…");
+    await waitForHeader(/阶段 \d+\/\d+ · .*投票/, 180000);
+    return true;
+  }
+
+  // ── 5. 推进到自我介绍阶段，等待真实 AI 角色发言，并由玩家最后介绍后自动进入下一阶段 ──
+  step(5, "点「进入下一阶段」，等待 AI 角色自我介绍 → 玩家最后介绍 → DM 自动推进");
   await closeFloatingNotice();
   await nextPhaseButton().click();
   await page.waitForSelector("text=/林晚|沈明远|陈默|周管家|顾屿|林桑|赵全勤/", { timeout: 120000 });
@@ -112,13 +155,27 @@ try {
   const hasRealContent = /我是|在下|各位|那一夜|昨晚|我叫/.test(bodyText);
   log(`  ${hasRealContent ? "✓ AI 发言含实质内容" : "⚠️ 未检测到典型角色发言措辞"}`);
 
-  // ── 6. 推进到自由交流阶段并玩家发言 ──
-  step(6, "推进到自由交流阶段 + 玩家发言");
-  if (await waitNextEnabled()) {
-    await closeFloatingNotice();
-    await nextPhaseButton().click();
-    log("  · 已推进（自由交流阶段）");
+  const introTextarea = page.locator("textarea").first();
+  await introTextarea.waitFor({ state: "visible", timeout: 30000 });
+  let introEnabled = false;
+  for (let i = 0; i < 120; i++) {
+    if (await introTextarea.isEnabled().catch(() => false)) {
+      introEnabled = true;
+      break;
+    }
+    await page.waitForTimeout(1000);
   }
+  if (!introEnabled) {
+    fail("自我介绍阶段输入框未开放，玩家无法最后发言");
+  }
+  await introTextarea.fill("大家好，我先简单介绍一下自己。我会如实说出我公开身份里该说的部分，但有些细节需要等线索出现后再判断。");
+  await page.keyboard.press("Enter");
+  log("  ✓ 玩家已完成最后自我介绍，等待 DM 自动推进…");
+  await waitForHeader(/阶段 2\/\d+ · .*?(自由交流|第一轮自由|搜证)/, 180000);
+  log("  ✓ DM 已自动推进到后续讨论/搜证阶段");
+
+  // ── 6. 推进到自由交流阶段并玩家发言 ──
+  step(6, "自由交流阶段 + 玩家发言");
   // 等输入框开放（自由交流阶段开放公共发言）
   const textarea = page.locator("textarea");
   let posted = false;
@@ -140,6 +197,7 @@ try {
   let votedOrEnded = false;
   const voteTab = () => page.getByRole("button", { name: /^投票$/ });
   for (let i = 0; i < 10; i++) {
+    await submitIfFinalStatement();
     // 已出现投票 tab？
     if ((await voteTab().count()) > 0) {
       await voteTab().first().click().catch(() => {});

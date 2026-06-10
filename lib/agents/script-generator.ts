@@ -3,6 +3,7 @@ import { buildScriptGenerationPrompt } from "@/lib/agents/prompts/generation";
 import { MOCK_DEDUCTION_SCRIPT } from "@/lib/agents/mock-data";
 import { prisma } from "@/lib/db/prisma";
 import { ScriptSource } from "@/lib/constants";
+import { buildScriptVisualStyle, decorateGeneratedClue } from "@/lib/game/clue-visuals";
 import type { GenerationParams, GeneratedScript } from "@/types/game";
 
 /** 调用 Claude（或 mock）生成完整剧本 JSON */
@@ -28,6 +29,10 @@ export async function persistScript(
 ): Promise<string> {
   const durationMin =
     generated.phaseConfig?.reduce((s, p) => s + (p.estimatedMinutes || 0), 0) || 90;
+  const visualStyle = buildScriptVisualStyle(generated.title, generated.setting);
+  const decoratedClues = generated.clueCards.map((clue, index) =>
+    decorateGeneratedClue(generated.title, clue, index, generated.setting)
+  );
 
   const script = await prisma.script.create({
     data: {
@@ -43,6 +48,7 @@ export async function persistScript(
       phaseConfig: JSON.stringify(generated.phaseConfig ?? []),
       murderSummary: generated.murderSummary,
       generationParams: JSON.stringify(params),
+      visualStyle: JSON.stringify(visualStyle),
       characters: {
         create: generated.characters.map((c, idx) => ({
           name: c.name,
@@ -61,12 +67,19 @@ export async function persistScript(
         })),
       },
       clueCards: {
-        create: generated.clueCards.map((cl) => ({
+        create: decoratedClues.map((cl) => ({
           title: cl.title,
           content: cl.content,
           clueType: cl.clueType,
           releasePhase: cl.releasePhase,
           isSecret: cl.isSecret,
+          imageUrl: cl.imageUrl,
+          mediaType: cl.mediaType ?? "image",
+          videoUrl: cl.videoUrl,
+          visualBatchId: cl.visualBatchId,
+          visualPrompt: cl.visualPrompt,
+          sequenceIndex: cl.sequenceIndex,
+          sharePolicy: cl.sharePolicy ?? "PUBLIC_AFTER_RELEASE",
         })),
       },
     },

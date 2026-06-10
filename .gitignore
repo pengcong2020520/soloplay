@@ -12,14 +12,25 @@
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
 *.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
 .claude/
+.vercel/
+.turbo/
+.cache/
 
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+*.log
 
 # local env files
 .env*
@@ -28,6 +39,12 @@ yarn-error.log*
 # prisma / sqlite
 /prisma/*.db
 /prisma/*.db-journal
+/prisma/*.db-shm
+/prisma/*.db-wal
+/prisma/*.sqlite
+/prisma/*.sqlite-journal
+/prisma/*.sqlite-shm
+/prisma/*.sqlite-wal
 /prisma/migrations/
 
 # typescript
@@ -37,6 +54,13 @@ yarn-error.log*
 /artifacts/
 /test-results/
 /playwright-report/
+/coverage/
+/tmp/
+/temp/
+/.nyc_output/
+*.mp4
+*.mov
+*.webm
 
 # local planning drafts
 /docs/superpowers/

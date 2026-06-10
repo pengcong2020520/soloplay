@@ -95,6 +95,10 @@ export const PlayerCommand = {
   RECAP: "RECAP",
   FOCUS_CHARACTER: "FOCUS_CHARACTER",
   GROUP_DISCUSS: "GROUP_DISCUSS",
+  REQUEST_CONSENSUS: "REQUEST_CONSENSUS",
+  SUBMIT_PHASE_CONCLUSION: "SUBMIT_PHASE_CONCLUSION",
+  MARK_NO_CONSENSUS: "MARK_NO_CONSENSUS",
+  REQUEST_DM_CLOSE: "REQUEST_DM_CLOSE",
 } as const;
 export type PlayerCommand = (typeof PlayerCommand)[keyof typeof PlayerCommand];
 
