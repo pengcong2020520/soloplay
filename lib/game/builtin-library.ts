@@ -146,7 +146,13 @@ async function refreshBuiltinVisualAssets(scriptId: string, entry: BuiltinEntry)
 
 /** 列出内置库剧本（公开元数据，不含真相/私密剧本） */
 export async function listBuiltinScripts() {
-  await ensureBuiltinLibrary();
+  const existingCount = await prisma.script.count({
+    where: { userId: BUILTIN_USER.id, source: ScriptSource.BUILTIN },
+  });
+  if (existingCount < BUILTIN_LIBRARY.length) {
+    await ensureBuiltinLibrary();
+  }
+
   const scripts = await prisma.script.findMany({
     where: { userId: BUILTIN_USER.id, source: ScriptSource.BUILTIN },
     orderBy: { createdAt: "asc" },

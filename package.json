@@ -14,7 +14,8 @@
     "assets:clues": "tsx scripts/generate-local-clue-assets.mts",
     "db:studio": "prisma studio",
     "e2e": "node scripts/e2e-smoke.mjs",
-    "postinstall": "prisma generate"
+    "vercel:build": "node scripts/prepare-vercel-db.mjs && next build",
+    "postinstall": "node scripts/prisma-generate.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
@@ -24,6 +25,7 @@
     "@radix-ui/react-scroll-area": "^1.2.2",
     "@radix-ui/react-slot": "^1.1.1",
     "@radix-ui/react-tabs": "^1.1.2",
+    "@supabase/supabase-js": "^2.108.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",

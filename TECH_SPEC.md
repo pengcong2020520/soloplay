@@ -1,8 +1,8 @@
 # AI 单人剧本杀游戏 — 技术规格文档 (Tech Spec)
 
-**版本**: v1.6.1
-**日期**: 2026-06-10
-**配套文档**: PRD v1.6.1
+**版本**: v1.7
+**日期**: 2026-06-11
+**配套文档**: PRD v1.7
 
 ### 版本记录
 
@@ -19,6 +19,7 @@
 | v1.5.2 | 2026-06-10 | 第六轮第一遍文档更新：校准当前 `phase-director` 主要按消息/线索数量判断阶段进度，缺少举证动作、共识状态与玩家阶段结论 |
 | v1.6 | 2026-06-10 | 第六轮第二遍文档更新：加入阶段目标模型、举证动作、共识/分歧状态、阶段结论命令、DM 收束判定和对应 UI |
 | v1.6.1 | 2026-06-10 | 开发后校准：记录已落地的 `clue-visuals`、`clue-director`、`clue-action` API、右侧共识板、阶段收敛指令和线索发放回退逻辑 |
+| v1.7 | 2026-06-11 | 第七轮文档更新：Vercel 生产数据库切换到 Supabase Postgres；Auth 改为 Supabase Auth 邮箱密码注册/登录；新增 Postgres schema、Vercel build 数据库准备脚本与业务表 RLS 策略 |
 
 > 文档维护规范：每次新增功能或调整整体技术架构前，必须先阅读 PRD 与 Tech Spec；先更新文档以校准当前实现，再将新增功能与架构写入文档；经用户确认后再进入实现。
 
@@ -35,8 +36,8 @@
 | 前端框架 | Next.js 14 App Router + React | 主游戏页位于 `app/game/[id]/GameClient.tsx` |
 | UI | Tailwind CSS + 本地 `components/ui/*` + lucide-react | 暗色、紧凑、游戏桌面方向 |
 | 后端 API | Next.js Route Handlers | `app/api/game/*`、`app/api/audio/*`、`app/api/script/*` |
-| 数据库 | Prisma + SQLite | 默认 `DATABASE_URL=file:./dev.db`，本地优先 |
-| 认证 | 本地用户/游客账号 + signed cookie | `lib/auth/*` |
+| 数据库 | Prisma + SQLite / Supabase Postgres | 本地默认 `DATABASE_URL=file:./dev.db`；Vercel 生产使用 Supabase Postgres 与 `prisma/schema.postgres.prisma` |
+| 认证 | Supabase Auth + 本地游客模式 + signed cookie | 邮箱注册/登录由 Supabase Auth 处理；业务 Route Handler 继续通过 `aidm_session` cookie 做归属校验 |
 | LLM 抽象 | `lib/anthropic.ts` | provider 优先级：Step > Anthropic > mock |
 | 语音 | `lib/step-audio.ts` + `/api/audio/tts` + `/api/audio/asr` | Step TTS/ASR，可配置模型 |
 | 游戏状态 | Prisma 持久化 + `Message.metadata` + `GameSession.engagementSignals` | 当前不需要 Redis |
@@ -64,6 +65,16 @@
 - Agent 主动展示线索目前仍是架构预留，尚未实现完整的 AI 主动 `AGENT_SHOW_PUBLIC` 写库流程。
 - Step Image Editor 批量生图尚未接入运行时；当前使用本地 SVG 资产作为可打包、稳定的多模态占位实现。
 - 视频线索仍保留 `videoUrl` 字段，不作为当前运行依赖。
+
+#### 1.0.3 Supabase 生产数据与认证基线（v1.7）
+
+- 生产环境数据库使用 Supabase Postgres；本地开发仍默认 SQLite，避免增加本地启动门槛。
+- Prisma 保留双 schema：`prisma/schema.prisma` 用于 SQLite，`prisma/schema.postgres.prisma` 用于 Supabase Postgres。
+- `postinstall` 与 `vercel:build` 会根据 `DATABASE_URL` / `POSTGRES_*` 自动选择 Prisma schema。
+- 邮箱注册/登录通过 Supabase Auth 的 password flow 完成；注册成功后创建或更新 `public."User"` 资料行，且 `User.id = auth.users.id`。
+- 项目仍保留游客 `local-user`，未登录用户可试玩；登录用户的数据通过 `userId` 归属隔离。
+- `public` 业务表启用 RLS，并按 `auth.uid()` 与 `userId`/所属 session/script 建立 select/insert/update/delete 策略，防止通过 Supabase Data API 越权访问。
+- Next.js Route Handlers 仍是游戏状态写入和 Agent 编排的唯一正式入口；Prisma 服务端连接负责复杂事务与剧本杀流程，不直接把核心写操作暴露给浏览器 Data API。
 
 ### 1.0.1 当前不引入 Redis 的原则
 

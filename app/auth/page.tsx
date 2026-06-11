@@ -17,11 +17,13 @@ export default function AuthPage() {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   // 注册后若有可认领的游客数据，展示认领提示
   const [claimable, setClaimable] = useState<{ scripts: number; sessions: number } | null>(null);
 
   async function submit() {
     setError("");
+    setNotice("");
     if (!email || !password) {
       setError("请输入邮箱和密码");
       return;
@@ -38,6 +40,12 @@ export default function AuthPage() {
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "操作失败");
+        return;
+      }
+      if (data.needsEmailConfirmation) {
+        setNotice(data.message ?? "注册成功，请先完成邮箱验证后再登录。");
+        setMode("login");
+        setPassword("");
         return;
       }
       // 注册后检查是否有可认领的游客数据；有则停下来询问，否则直接回大厅
@@ -136,6 +144,7 @@ export default function AuthPage() {
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
+          {notice && <p className="text-sm text-primary">{notice}</p>}
 
           <Button className="w-full" onClick={submit} disabled={busy}>
             {busy && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}

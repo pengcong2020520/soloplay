@@ -21,6 +21,7 @@ Thumbs.db
 *.7z
 *.rar
 .claude/
+.agents/
 .vercel/
 .turbo/
 .cache/
@@ -64,3 +65,5 @@ pnpm-debug.log*
 
 # local planning drafts
 /docs/superpowers/
+skills-lock.json
+.vercel

@@ -123,28 +123,85 @@ pm2 start npm --name soloplay -- run start
 pm2 save
 ```
 
-## 7. 数据库切换到 Postgres
+## 7. 部署到 Vercel
+
+Vercel 部署建议使用 Supabase Postgres，不建议使用默认 SQLite。项目已经保留双 schema：
+
+- `prisma/schema.prisma`：本地 SQLite。
+- `prisma/schema.postgres.prisma`：Vercel / Supabase Postgres。
+
+Vercel 构建命令由 `vercel.json` 指向：
+
+```bash
+npm run vercel:build
+```
+
+该命令会自动执行：
+
+```bash
+node scripts/prepare-vercel-db.mjs
+next build
+```
+
+其中 `prepare-vercel-db.mjs` 会在 `DATABASE_URL` 是 Postgres 时执行：
+
+```bash
+prisma generate --schema prisma/schema.postgres.prisma
+prisma db push --schema prisma/schema.postgres.prisma --skip-generate
+tsx prisma/seed.ts
+```
+
+需要在 Vercel 项目中配置的环境变量：
+
+```bash
+DATABASE_URL=postgresql://...             # Vercel 运行时使用 Supabase session pooler
+MIGRATION_DATABASE_URL=postgresql://...   # 建表/同步 schema 使用 session pooler 或 direct URL
+AUTH_SECRET=<随机长字符串>
+NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<Supabase publishable key>
+STEP_API_KEY=<可选，启用真实 Step>
+STEP_MODEL=step-3.5-flash-2603
+```
+
+如果通过 Vercel Marketplace 安装 Supabase，数据库连接变量会由集成自动注入。项目脚本会自动识别 `DATABASE_URL`、`POSTGRES_PRISMA_URL`、`POSTGRES_URL_NON_POOLING` 或 `POSTGRES_URL`；其余变量需要手动添加。
+
+CLI 部署参考：
+
+```bash
+npx vercel@latest login
+npx vercel@latest link --yes --scope <team-or-user-scope> --project soloplay
+npx vercel@latest install supabase --name soloplay-db -m region=sin1
+npx vercel@latest env add AUTH_SECRET production
+npx vercel@latest env add STEP_API_KEY production
+npx vercel@latest env add STEP_MODEL production
+npx vercel@latest deploy --prod --scope <team-or-user-scope>
+```
+
+注意：不要上传 `.env`。真实密钥应只保存在 Vercel 环境变量中。
+
+## 8. 数据库切换到 Postgres
 
 默认使用 SQLite，适合本机演示或单机部署。如果部署到长期在线服务器，建议改用 Postgres。
 
-步骤：
+本项目已内置 `prisma/schema.postgres.prisma`，推荐使用 Supabase Postgres 并直接用该文件生成 Postgres Prisma Client：
 
-1. 打开 `prisma/schema.prisma`
-2. 将 datasource provider 从 `sqlite` 改为 `postgresql`
-3. 在 `.env` 中设置：
+1. 在 `.env` 中设置：
 
 ```bash
 DATABASE_URL=postgresql://user:password@host:5432/database
 ```
 
-4. 执行：
+2. 执行：
 
 ```bash
-npm run db:push
+npx prisma generate --schema prisma/schema.postgres.prisma
+npx prisma db push --schema prisma/schema.postgres.prisma
 npm run db:seed
 ```
 
-## 8. 验证部署
+本地开发如果继续使用 SQLite，不需要改动 `prisma/schema.prisma`。
+
+## 9. 验证部署
 
 基础检查：
 
@@ -170,7 +227,7 @@ npm run e2e
 
 `npm run e2e` 会打开真实浏览器自动走主流程。配置真实 Step key 时速度会更慢，也可能受 API 限流影响。
 
-## 9. 常见问题
+## 10. 常见问题
 
 ### 页面显示 Mock 模式
 
@@ -231,7 +288,7 @@ npm install
 npm ci
 ```
 
-## 10. 交付包不包含的内容
+## 11. 交付包不包含的内容
 
 以下内容不会随 zip 分发，需要在目标机器重新生成或自行配置：
 
