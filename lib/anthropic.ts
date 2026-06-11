@@ -34,9 +34,9 @@ function supportsStepTemperature(model: string): boolean {
 }
 
 function normalizeStepMaxTokens(requested: number): number {
-  // 实测 step-3.7-flash 在很小的 max_tokens 下容易只返回 reasoning、content 为空。
-  // 官方示例响应也把可见文本放在 message.content；这里给短任务保底空间。
-  return STEP_MODEL.toLowerCase().includes("step-3.7-flash") ? Math.max(requested, 256) : requested;
+  // Step 推理/Agent 模型在很小的 max_tokens 下可能只产出 reasoning，导致 message.content 为空。
+  // 不回退到 reasoning_content（那里可能包含推理过程），而是统一给可见答案留足输出空间。
+  return Math.max(requested, 256);
 }
 
 // ─── Anthropic 配置 ───────────────────────────────────
